@@ -176,8 +176,6 @@ const SAFE_COMMANDS: &[&str] = &[
     "npx prettier",
     "node --version",
     "cargo build",
-    // Runs the builder's own game (e.g. `cargo run -- --screenshot …`).
-    "cargo run",
     "cargo check",
     "cargo test",
     "cargo fmt",
@@ -195,14 +193,8 @@ const SAFE_COMMANDS: &[&str] = &[
     "git diff",
     "git log",
     "git branch",
-    "ls",
-    "dir",
     "pwd",
     "mkdir",
-    "cat ",
-    "head ",
-    "tail ",
-    "wc ",
     "echo ",
 ];
 
@@ -306,15 +298,6 @@ fn engine_build(part: &str) -> bool {
     }
 }
 
-/// A program the builder made inside app/ (to try its build, e.g. `--screenshot`). It must exist
-/// there: a bare name such as `rm` would otherwise look like `app/rm`.
-fn own_program(part: &str, app: &Path) -> bool {
-    let (prog, _) = program_of(part);
-    // The agent works from the workspace (app/'s parent) or from inside app/.
-    let bases = [app.parent().unwrap_or(app), app];
-    !prog.is_empty() && bases.iter().any(|b| resolve(b, prog).is_some_and(|p| inside(app, &p) && p != app && p.is_file()))
-}
-
 /// Decide a Bash command: every `&&`-joined part must be a safe build command, the game engine's
 /// own build, the builder's own program in app/, or a `cd` that stays inside the project, with
 /// no other shell control characters.
@@ -341,7 +324,7 @@ fn decide_command(cmd: &str, app: &Path) -> Decision {
                 _ => return ask(),
             }
         }
-        if !(safe_command(part) || engine_build(part) || own_program(part, app)) {
+        if !(safe_command(part) || engine_build(part)) {
             return ask();
         }
     }
@@ -372,7 +355,25 @@ pub fn decide(ws: Option<&Workspace>, tool: &str, input: &Value) -> Decision {
     };
     let app = ws.map(Workspace::app_dir);
     match tool {
-        "Read" | "Glob" | "Grep" | "LS" | "TodoWrite" => Decision::Allow,
+        "Read" | "Glob" | "Grep" | "LS" => {
+            // Reading is harmless only inside the project: the agent may inspect what it is
+            // building, not `~/.ssh`, `~/.aws` or the rest of the user's home.
+            let target = match tool {
+                "Read" => s("file_path"),
+                "Glob" if s("path").is_empty() => s("pattern"),
+                _ => s("path"),
+            };
+            let contained = target.is_empty()
+                || opened_at(ws, &target)
+                    .iter()
+                    .all(|p| p.as_deref().zip(ws).is_some_and(|(p, w)| really_inside(&w.root, p)));
+            if contained {
+                Decision::Allow
+            } else {
+                Decision::Ask { title: format!("Read outside the project: {target}"), kind }
+            }
+        }
+        "TodoWrite" => Decision::Allow,
         "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {
             let target = if tool == "NotebookEdit" { s("notebook_path") } else { s("file_path") };
             // app/ is what it builds; checks/ holds its own notes and screenshots. The inbox (where
@@ -963,6 +964,24 @@ mod tests {
     }
 
     #[test]
+    fn reads_inside_the_project_are_allowed_outside_asked() {
+        let (_d, w) = ws();
+        assert_eq!(decide(Some(&w), "Read", &json!({"file_path": "app/src/main.rs"})), Decision::Allow);
+        assert_eq!(decide(Some(&w), "Glob", &json!({"path": w.app_dir().display().to_string(), "pattern": "**/*.tsx"})), Decision::Allow);
+        assert_eq!(decide(Some(&w), "Grep", &json!({"pattern": "fn main"})), Decision::Allow);
+        for (tool, input) in [
+            ("Read", json!({"file_path": "/etc/passwd"})),
+            ("Read", json!({"file_path": "../../.ssh/id_rsa"})),
+            ("Glob", json!({"path": "/home"})),
+            ("Grep", json!({"path": "/etc"})),
+            ("LS", json!({"path": "/home"})),
+        ] {
+            assert!(matches!(decide(Some(&w), tool, &input), Decision::Ask { .. }), "{tool} {input}");
+        }
+        assert!(matches!(decide(None, "Read", &json!({"file_path": "/etc/passwd"})), Decision::Ask { .. }));
+    }
+
+    #[test]
     fn edits_inside_app_are_allowed_outside_asked() {
         let (_d, w) = ws();
         let inside = w.app_dir().join("src/App.tsx");
@@ -1132,7 +1151,7 @@ mod tests {
     }
 
     #[test]
-    fn engine_builds_and_its_own_program_go_ahead() {
+    fn engine_builds_go_ahead_but_running_the_game_asks() {
         let (_d, w) = ws();
         let app = w.app_dir();
         for built in ["target/debug/game.exe", "Build/Game.exe"] {
@@ -1146,9 +1165,6 @@ mod tests {
             "\"C:\\Program Files\\Unity\\Hub\\Editor\\6000.0.23f1\\Editor\\Unity.exe\" -batchmode -quit -nographics -projectPath app -executeMethod CraftBuild.Build -logFile app/Logs/build.log",
             "\"D:/Engines/Godot_v4.4.1-stable_win64.exe\" --headless --path app --quit-after 120",
             "\"C:/Program Files/Epic Games/UE_5.4/Engine/Build/BatchFiles/RunUAT.bat\" BuildCookRun -project=app/Game.uproject",
-            "cargo run -- --screenshot shots/now.png",
-            "app/target/debug/game.exe --screenshot app/shots/now.png",
-            "cd app && ./Build/Game.exe --screenshot shots/now.png",
         ] {
             assert_eq!(decide_command(ok, &app), Decision::Allow, "{ok}");
         }
@@ -1159,6 +1175,9 @@ mod tests {
             "../elsewhere/tool.exe",
             "app/target/debug/game.exe > out.txt",
             "\"C:/x/build.bat\"",
+            "cargo run -- --screenshot shots/now.png",
+            "app/target/debug/game.exe --screenshot app/shots/now.png",
+            "cd app && ./Build/Game.exe --screenshot shots/now.png",
         ] {
             assert!(matches!(decide_command(ask, &app), Decision::Ask { .. }), "{ask}");
         }
