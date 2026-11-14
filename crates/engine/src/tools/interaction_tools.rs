@@ -943,7 +943,10 @@ mod tests {
         assert!(refused("Bash", &json!({"command": format!("strings \"{shown}/Game.exe\" | head")})));
         assert!(refused("Bash", &json!({"command": format!("cat {}", shown.replace('\\', "/").to_uppercase())})), "any spelling of its folder");
         assert!(!refused("Read", &file(&w.app_dir())), "the project stays open");
-        assert_eq!(approve_with(inbox(), true, false, "Read", &file(&game), &|| false, &mut || {}).unwrap(), Ok(()), "Deep mode may read it");
+        assert!(
+            approve_with(inbox(), true, false, "Read", &file(&game), &|| false, &mut || {}).unwrap().is_err(),
+            "Deep mode no longer reads outside the workspace"
+        );
 
         let site =
             Workspace::create(&dir.path().join("projects"), "s", "Recreate this website", TargetRef::Website { url: "https://www.Example.com/pricing".into() })
