@@ -363,15 +363,8 @@ pub fn decide(ws: Option<&Workspace>, tool: &str, input: &Value) -> Decision {
                 "Glob" if s("path").is_empty() => s("pattern"),
                 _ => s("path"),
             };
-            let contained = target.is_empty()
-                || opened_at(ws, &target)
-                    .iter()
-                    .all(|p| p.as_deref().zip(ws).is_some_and(|(p, w)| really_inside(&w.root, p)));
-            if contained {
-                Decision::Allow
-            } else {
-                Decision::Ask { title: format!("Read outside the project: {target}"), kind }
-            }
+            let contained = target.is_empty() || opened_at(ws, &target).iter().all(|p| p.as_deref().zip(ws).is_some_and(|(p, w)| really_inside(&w.root, p)));
+            if contained { Decision::Allow } else { Decision::Ask { title: format!("Read outside the project: {target}"), kind } }
         }
         "TodoWrite" => Decision::Allow,
         "Write" | "Edit" | "MultiEdit" | "NotebookEdit" => {
