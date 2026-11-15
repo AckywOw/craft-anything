@@ -1637,7 +1637,7 @@ fn mechanics_literals_never_verify_effective_behavior() {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn a_measured_self_test_does_not_stand_in_for_a_mechanics_comparison() {
     use std::os::unix::fs::PermissionsExt;
