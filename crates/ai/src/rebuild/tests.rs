@@ -1637,7 +1637,7 @@ fn mechanics_literals_never_verify_effective_behavior() {
     }
 }
 
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(unix)]
 #[test]
 fn a_measured_self_test_does_not_stand_in_for_a_mechanics_comparison() {
     use std::os::unix::fs::PermissionsExt;
@@ -2886,7 +2886,7 @@ pub(crate) fn check_worker(ws: &Workspace, deep: bool) -> Worker {
     }
 }
 
-#[cfg(unix)]
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[test]
 fn console_study_keeps_two_real_observations_for_each_input() {
     use std::os::unix::fs::PermissionsExt;
