@@ -2947,6 +2947,11 @@ Owner: open · Status: in progress
       — claimed: AlexJoaquimPereira, branch bugfix/r3.12-compare-graph-limitations
 
 
+- [x] Take target file signatures from the shared craft-sniff table. The app still breaks ties
+      that need its own parsers (managed PE, Java class versus a universal Mach-O, APK by name
+      or manifest, ASAR, text). Fat Mach-O files that start 0xCAFEBABF are now recognized.
+      — claimed: FredApps, branch refactor/target-kind-craft-sniff
+
 ### R3.13 Web inspection correctness
 Owner: open · Status: in progress
 - [x] Decode character references in HTML page titles before returning their displayed text.
