@@ -186,7 +186,8 @@ pub fn sniff(bytes: &[u8], name: &str) -> TargetKind {
         Some(Kind::Dex) => TargetKind::Dex,
         Some(Kind::Zip) => sniff_zip(bytes, &lower),
         Some(Kind::BinaryPlist) => TargetKind::Plist,
-        _ => sniff_unsigned(bytes, &lower),
+        Some(_) => TargetKind::Unknown,
+        None => sniff_unsigned(bytes, &lower),
     }
 }
 
@@ -313,6 +314,7 @@ mod tests {
         assert_eq!(sniff(b"<?xml?><plist version=\"1.0\"/>", "Info.plist"), TargetKind::Plist);
         // Media and archives the shared table names are not targets we inspect by kind.
         assert_eq!(sniff(b"\x89PNG\r\n\x1a\n\0\0\0\rIHDR", "icon.png"), TargetKind::Unknown);
+        assert_eq!(sniff(b"070701", "archive.cpio"), TargetKind::Unknown);
         assert_eq!(sniff(b"", "x"), TargetKind::Unknown);
         assert_eq!(sniff(b"console.log(1)", "main.js"), TargetKind::Script);
         assert_eq!(sniff(b"# Notes\n", "notes.md"), TargetKind::Text);
