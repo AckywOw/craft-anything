@@ -1279,6 +1279,7 @@ dependencies = [
  "craft-anything-js",
  "craft-anything-platform",
  "craft-anything-testkit",
+ "craft-sniff",
  "dirs",
  "hex",
  "image",
@@ -1493,6 +1494,11 @@ source = "git+https://github.com/storytold/craft-libs?rev=902a722422583d05109367
 dependencies = [
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "craft-sniff"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=425363fadf2cd04909239e978406f9edcc612d75#425363fadf2cd04909239e978406f9edcc612d75"
 
 [[package]]
 name = "craft-update"
