@@ -521,7 +521,8 @@ been run live.
       Ready, using the brief, handoff and finding tools; the third stopped when the model wrote a
       call to a tool that doesn't exist as text
 - [ ] Run a build live with the lean list on a small local model, and note the result in STATUS
-- [ ] Each AI's tool list in Settings → AI (beside what Auto works out to) and `ai tools <name>`
+- [x] Each AI's tool list in Settings → AI (beside what Auto works out to) and `ai tools <name>`
+      — claimed: justinjohn0306, branch feature/r5.4-tool-list-setting
 - [x] A builder that can't see pictures (the API loop) is told it can't, then sent to open
       screenshots with Read: the website capture lines and the `--screenshot` and reference-picture
       lines in `brief.rs`, the website check's "Open each pair", the reminder after each round, the
@@ -654,10 +655,23 @@ Owner: open · Status: todo
 - [x] Review of #1921: a key in a plugin's arguments (`?token=…`) is hidden in its log, a server that
       stops answering is stopped and its error and log keep what it printed, and a failed write waits
       a moment for the exit. The wait after a failed write has no test of its own (it's a race)
+- [x] An API backend's failure log leaves out what the service said: `write_failure_log` wrote
+      the error's message, where a service or a proxy in front of it can repeat the key or words
+      from the request (raised in review of #1049). It keeps Craft Anything's code, the HTTP
+      status, the context window and request size, and the service's error code only when it is
+      one of `failure::KNOWN_PROVIDER_ERRORS`
+      — claimed: scks1, branch bugfix/r5.5-api-failure-log-service-text
 - [x] Settings → AI can replace or forget an API backend's saved key, so a key rotated in the
       environment isn't hidden behind an older saved one (#1358); `ai key <name>` shows, replaces
       or forgets it headlessly, and never prints it
       — claimed: AlexJoaquimPereira, branch bugfix/r5.5-replace-saved-key
+- [x] A tool that needs consent, refused by an API-model build without asking, told the model
+      "The user said no" (#1938): it now says nobody was asked and points at a plugin's `consent`
+      setting (`Conversation::refuse_consent`, `BUILD_REFUSES_CONSENT`)
+      — claimed: justinjohn0306, branch bugfix/r5.5-build-consent-refusal
+- [ ] **decision**: should an API-model build ask the person (a card, as coding-agent builds do
+      through the project's inbox) before a tool that needs consent, or follow a setting, instead
+      of refusing every one outside the Build tools (#1938)
 
 ### R5.6 Tools report only what they saw
 Owner: open · Status: todo
@@ -755,7 +769,14 @@ yet, and the quick start is how every new person begins.
 **A second computer or another system:**
 - [ ] A live run of a project copied between two real computers with Claude Code (#451, #452); done
       on one Mac with a second `CLAUDE_CONFIG_DIR` standing in for the other computer (STATUS.md)
-- [ ] Ghidra setup tried for real on Linux and macOS (the Java pins were checked by tests only)
+- [x] Ghidra setup tried for real on Linux: the guided install (Ghidra 12.1.4 and its Java) on a clean
+      Debian 13 and a Debian 13 desktop, then a Deep-mode decompile from Ghidra (STATUS.md, Clean room and
+      Deep mode)
+      — claimed: Fadlalla-ai, branch test/ghidra-setup-linux
+- [ ] Ghidra setup tried for real on macOS (the Java pins were checked by tests only)
+- [ ] A Ghidra folder setting that names a file, such as the `/usr/bin/ghidra` start script, is listed as
+      found by `engines_list`, but Deep mode then quietly decompiles with the built-in lifter instead;
+      refuse it, or follow the script to its Ghidra folder
 - [x] A Ghidra with no decompiler program for this computer (public downloads leave out macOS) is
       refused before the long analysis, with the command that builds it; checked on a real Mac
 - [ ] `engines_install` builds Ghidra's native programs on macOS, so a Mac install works unaided
@@ -764,8 +785,25 @@ yet, and the quick start is how every new person begins.
       needed `build-essential`, now in the README's package line; then the app and CLI built and
       `doctor` was healthy (STATUS.md, "Linux quick start")
       — claimed: Fadlalla-ai, branch test/r5.7-linux-quick-start
-- [ ] README quick start on a clean machine (Linux), the rest: the desktop window on a clean
-      machine with a screen, and the README's `rebuild` commands with a signed-in coding agent
+- [x] README quick start on a clean machine (Linux), the window and the snake `rebuild`: the window
+      opened on a clean Ubuntu 24.04 (X11, virtual screen) once `libxkbcommon-x11-0` was installed
+      (now in the package line), and the snake-game `rebuild` reached Ready with Claude Code on a
+      desktop that wasn't clean (STATUS.md, "Linux quick start")
+      — claimed: Fadlalla-ai, branch test/r5.7-linux-window-and-rebuild
+- [ ] README quick start on a clean machine (Linux), still open: the website `rebuild` examples,
+      a `rebuild` on a clean machine, the window on a real screen, and a Wayland session
+- [x] A Rust build whose folder's Cargo settings move its output (`build.target-dir` or
+      `CARGO_TARGET_DIR`): `built_program` reads `CARGO_TARGET_DIR`, the closest project or
+      ancestor `config`/`config.toml` setting, then the default `target/`, so Play and the checks
+      find the program. A target directory outside the app supplies only a program the manifests
+      name; without a name, only target directories inside the app are searched, and a pin copies
+      such a program into its own folder; commits `842f011a`, `216295fd`
+      — claimed: AlexJoaquimPereira, branch bugfix/r5.7-cargo-target-dir
+- [ ] Read a global `$CARGO_HOME/config.toml` `build.target-dir`, and a parent workspace's default
+      `target/`, when locating a Rust build's program; or ask Cargo (`cargo metadata`) only where a
+      program is about to start or be checked, keeping frequent reads on the files (PR #1942's
+      author offered this follow-up). The fix above reads the project/ancestor `.cargo` files and
+      `CARGO_TARGET_DIR`.
 - [ ] Build the new DMG on a Mac (release dry run) and look at the window once
 - [ ] #490 on macOS: a real Deep build through Claude Code with the published 0.3.0 CLI, with
       2.1.179 and a current version. Windows passed; the Mac CLI was only checked to contain the

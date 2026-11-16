@@ -262,6 +262,30 @@ fn built_program_finds_the_cargo_output_only() {
     assert_eq!(built_program(d.path()), Some(debug.join(exe("snake"))));
 }
 
+/// R5.7: a project that moves Cargo's output writes its program where the config says, not in
+/// `target/`; Play and the checks must look there.
+#[test]
+fn built_program_follows_cargos_moved_target_directory() {
+    let d = tempfile::tempdir().unwrap();
+    let app = d.path();
+    std::fs::create_dir_all(app.join(".cargo")).unwrap();
+    std::fs::write(app.join(".cargo/config.toml"), "[build]\ntarget-dir = \"out\"\n").unwrap();
+    std::fs::write(app.join("Cargo.toml"), "[package]\nname = \"cargo-target-probe\"\n").unwrap();
+    std::fs::create_dir_all(app.join("src")).unwrap();
+    std::fs::write(app.join("src/main.rs"), "fn main() {}\n").unwrap();
+    let debug = app.join("out").join("debug");
+    std::fs::create_dir_all(&debug).unwrap();
+    let exe = if cfg!(windows) { "cargo-target-probe.exe" } else { "cargo-target-probe" };
+    let program = debug.join(exe);
+    std::fs::write(&program, "x").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    assert_eq!(built_program(app), Some(program));
+}
+
 #[test]
 fn play_starts_the_window_app_of_a_workspace_not_its_newest_program() {
     // Play started the CLI a workspace also built (it was newer), which printed help and quit
@@ -3632,6 +3656,72 @@ fn decompiling_once_is_remembered_by_the_project() {
     assert!(ws.manifest.decompiled, "the decompile is seen by its MCP name");
     ws.save().unwrap();
     assert!(Workspace::open(&ws.root).unwrap().manifest.decompiled, "a later run reads it from craft.json");
+}
+
+/// A builder on an API model that asks for consent: a Build tool, then a plugin's tool.
+#[derive(Default)]
+struct AsksConsent {
+    events: Vec<AgentEvent>,
+    allowed: Vec<String>,
+    refused: Vec<(String, String)>,
+}
+
+impl Conversation for AsksConsent {
+    fn send(&mut self, _text: &str) {
+        let ask = |id: &str, tool: &str| AgentEvent::ConsentNeeded { call_id: id.into(), tool: tool.into(), title: tool.into(), explanation: String::new() };
+        self.events = vec![
+            ask("1", "build_command_run"),
+            ask("2", "plugin_tool"),
+            AgentEvent::TurnDone { backend: "test".into(), input_tokens: 0, output_tokens: 0, tokens_unknown: false, cost_usd: None, cost_is_estimate: false },
+        ];
+    }
+    fn poll(&mut self) -> Vec<AgentEvent> {
+        std::mem::take(&mut self.events)
+    }
+    fn answer_consent(&mut self, call_id: &str, allow: bool) {
+        assert!(allow, "a refusal says why: {call_id}");
+        self.allowed.push(call_id.into());
+    }
+    fn refuse_consent(&mut self, call_id: &str, why: &str) {
+        self.refused.push((call_id.into(), why.into()));
+    }
+    fn stop(&mut self) {}
+    fn is_busy(&self) -> bool {
+        !self.events.is_empty()
+    }
+}
+
+/// #1938: a tool outside the Build tools that needs consent is refused without a card, and the
+/// builder is told that nobody was asked and where a plugin's consent is set, not "the user said no".
+#[test]
+fn a_build_says_why_it_refused_a_tool_that_needs_consent() {
+    let d = tempfile::tempdir().unwrap();
+    let mut ws = Workspace::create(d.path(), "Sim", "Recreate this game", TargetRef::None).unwrap();
+    let (tx, _rx) = std::sync::mpsc::channel();
+    let mut w = Worker {
+        wake: Default::default(),
+        engine: Arc::new(Engine::new(craft_anything_engine::testing::session())),
+        tx,
+        stop: CancelToken::default(),
+        preview: Arc::default(),
+        seen: HashSet::new(),
+        inbox: Inbox::new(ws.inbox_dir()),
+        editor: None,
+        notes: Arc::default(),
+        feed: Arc::new(Mutex::new(feed::FeedLog::open(&ws))),
+        keys: crate::KeyStore::file_only(ws.root.join("keys.toml")),
+        kept_checks: Mutex::default(),
+        assets: false,
+        usage: None,
+        self_check: None,
+        reset_progress_after_notes: false,
+    };
+    let mut builder = AsksConsent::default();
+    w.turn(&mut ws, &mut builder, "Build it.", true, None).unwrap();
+    assert_eq!(builder.allowed, ["1"], "the Build tools apply the approval policy themselves");
+    let [(id, why)] = &builder.refused[..] else { panic!("{:?}", builder.refused) };
+    assert_eq!(id, "2");
+    assert!(why.contains("plugin_tool") && why.contains("Nobody was asked") && why.contains("`consent`"), "{why}");
 }
 
 /// A later request's run, reading the project from disk, reminds only a builder that never
