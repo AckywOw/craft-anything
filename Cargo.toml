@@ -31,6 +31,7 @@ craft-mime = { git = "https://github.com/storytold/craft-libs", rev = "de97c35f2
 # XML plist reader; prerequisite craft-libs #1633 (repin after merge).
 craft-elf = { git = "https://github.com/storytold/craft-libs", rev = "fd91be74f078d7062945ff6512cf65afea0c73ac", features = ["serde"] }
 craft-macho = { git = "https://github.com/storytold/craft-libs", rev = "83cb1133dd2bdd0d655ba2300f88863f0f53db0b", features = ["serde"] }
+craft-jsonc = { git = "https://github.com/storytold/craft-libs", rev = "67dbf708ec971634e4b2095e90446f40f91d69e9" }
 craft-plist = { git = "https://github.com/storytold/craft-libs", rev = "28561846057d88b8c2454b677856081707109631" }
 craft-sniff = { git = "https://github.com/storytold/craft-libs", rev = "070005125f0af1a5ae4a59002270e5849505bfc0" }
 thiserror = "2"

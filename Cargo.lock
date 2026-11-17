@@ -1340,6 +1340,7 @@ dependencies = [
  "bzip2-rs",
  "craft-anything-testkit",
  "craft-elf",
+ "craft-jsonc",
  "craft-macho",
  "craft-mime",
  "craft-plist",
@@ -1502,6 +1503,14 @@ source = "git+https://github.com/storytold/craft-libs?rev=fd91be74f078d7062945ff
 dependencies = [
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-jsonc"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=67dbf708ec971634e4b2095e90446f40f91d69e9#67dbf708ec971634e4b2095e90446f40f91d69e9"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
