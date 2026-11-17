@@ -1341,11 +1341,13 @@ dependencies = [
  "craft-anything-testkit",
  "craft-elf",
  "craft-java-class",
+ "craft-jsonc",
  "craft-macho",
  "craft-mime",
  "craft-pe",
  "craft-plist",
  "craft-sourcemap",
+ "craft-tar",
  "lzma-rs",
  "miniz_oxide 0.8.9",
  "object 0.36.7",
@@ -1507,13 +1509,22 @@ dependencies = [
  "thiserror 2.0.21",
 ]
 
+
 [[package]]
 name = "craft-java-class"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=476778226868d37817e85ae5030a6e4b768af7ed#476778226868d37817e85ae5030a6e4b768af7ed"
+source = "git+https://github.com/storytold/craft-libs?rev=9c82808cb201add5e1111484754ed3e401512ed0#9c82808cb201add5e1111484754ed3e401512ed0"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-jsonc"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=64fcd9531ae2f6a8f9498478805cfc7228189a9b#64fcd9531ae2f6a8f9498478805cfc7228189a9b"
+dependencies = [
+ "serde_json",
 ]
 
 [[package]]
@@ -1565,6 +1576,14 @@ dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-tar"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=42bb9d35bba5c1074cce44fbc157785f3d29ad90#42bb9d35bba5c1074cce44fbc157785f3d29ad90"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
