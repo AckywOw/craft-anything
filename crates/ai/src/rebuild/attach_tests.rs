@@ -109,7 +109,9 @@ fn a_follower_that_comes_in_part_way_has_the_whole_feed_so_far() {
     owner.emit(checklist("in_progress"));
     owner.emit(RunEvent::Agent(AgentEvent::TextDelta { text: "Half".into() }));
     owner.emit(RunEvent::Agent(AgentEvent::ToolStarted { call_id: "r".into(), tool: "Read".into(), input: json!({"file_path": "src/main.rs"}) }));
-    std::thread::sleep(Duration::from_millis(30));
+    // Longer than the 30 ms looked for below: the log keeps whole milliseconds (the run's start,
+    // each event's time and the follower's clock), so a follower can count a few less than ran.
+    std::thread::sleep(Duration::from_millis(40));
 
     let mut run = RebuildRun::attach(&ws, Wake::default()).unwrap();
     assert_eq!(run.feed_now(), owner.items(), "everything so far, before the first poll");
