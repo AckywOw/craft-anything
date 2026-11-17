@@ -1340,6 +1340,7 @@ dependencies = [
  "bzip2-rs",
  "craft-anything-testkit",
  "craft-elf",
+ "craft-java-class",
  "craft-macho",
  "craft-mime",
  "craft-pe",
@@ -1501,6 +1502,15 @@ source = "git+https://github.com/storytold/craft-libs?rev=de97c35f2b2af01c623716
 name = "craft-elf"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=fd91be74f078d7062945ff6512cf65afea0c73ac#fd91be74f078d7062945ff6512cf65afea0c73ac"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-java-class"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=476778226868d37817e85ae5030a6e4b768af7ed#476778226868d37817e85ae5030a6e4b768af7ed"
 dependencies = [
  "serde",
  "thiserror 2.0.21",

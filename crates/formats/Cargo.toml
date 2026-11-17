@@ -10,6 +10,7 @@ publish = false
 workspace = true
 
 [dependencies]
+craft-java-class = { workspace = true }
 craft-sourcemap = { workspace = true }
 craft-pe = { workspace = true }
 craft-elf = { workspace = true }
