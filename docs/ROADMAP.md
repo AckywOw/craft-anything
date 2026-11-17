@@ -1906,20 +1906,31 @@ Gaps found while using the app for real projects.
 - [x] **decision** (built, waiting for the maintainers' answer on #1970) On closing during a
       build in its own process, the person chooses "Keep building" or "Pause"
       (`build.on_close`: ask, keep or pause) (#1970, step 4)
+- [x] A build in its own process that nobody watches (#1970): followers hold a shared lock on
+      `inbox/watchers.lock`; a runner nobody has watched for 60 s pauses before its next builder
+      turn, unless the person chose "Keep building" (`inbox/run-keep`); it shows one system
+      notification when it ends or needs an answer (`platform::notify`: PowerShell toast,
+      `osascript`, `notify-send`; English only, and on Windows under PowerShell's name); a Pause
+      asked while the runner starts is kept in `inbox/run-stop.json`; runner builds don't wait to
+      work alone; a question waiting when the app attaches shows "Needs you"
+- [x] A stopped build ends an API backend's request at once (about 100 ms, not up to its
+      5-minute limit): the request runs on a helper thread and the turn polls the stop
+      (`http::post_json_stoppable`), for Anthropic and every OpenAI-compatible backend (#1970)
 - [ ] Builds in their own process, left for later (#1970):
       a build started by a version without the event log is only followed from what it saves
       (no live activity, no notes), and the projects list learns it ended when the list is read
-      again; a runner nobody is attached to keeps building until it ends or pauses by its own
-      limits (the proposal's "pause at the end of the turn when no app comes back" isn't built);
-      no system notification when a background build finishes or needs an answer; a Pause chosen
-      while a runner is still starting (its first seconds) is lost when the app exits; a fork's
-      own kinds don't reach the runner, which uses the built-in ones; an API-backend build still
-      waits to work alone although each runner has its own session; a question already waiting
-      when the app attaches doesn't mark the project "Needs you"; the Settings row's title and
-      subtitle aren't covered by `i18n-coverage` (no Settings row is); a Stop (or SIGTERM) while an
-      API builder waits for its model's first byte takes effect only when that request ends, up
-      to its 5-minute limit (seen on Linux: a runner stopped 284 s after SIGTERM)
-- [ ] Not run yet for builds in their own process (#1970): macOS, a Linux desktop session (run
+      again; a fork's own kinds don't reach the runner, which uses the built-in ones; the
+      Settings row's title and subtitle aren't covered by `i18n-coverage` (no Settings row is);
+      a question already answered can mark a project "Needs you" when the app attaches to a
+      project that isn't open (the log replays every past question); a question waiting when the
+      app goes away isn't notified, only one that starts waiting later; a stopped request's
+      helper thread stays until the request's own time limit; the rebuild's retry wait notices
+      a stop within a second, not at once; `investigation_tools`' `UpdateLock` lets go of its
+      file lock only when the file closes, as the build lock did before its Linux fix (one
+      failure in 11 Linux runs of `investigation_locks_are_bounded_cancelled_and_released_on_drop`)
+- [ ] Not run yet for builds in their own process (#1970): a real build with a real coding
+      agent closed and reopened in the desktop app; a runner pausing after 60 s unwatched and a
+      notification from a real runner; macOS, a Linux desktop session (run
       on Ubuntu 26.04 under WSL2 only: the suites, a runner outliving its killed parent and its
       closed terminal; not a logout, or a desktop that stops an app's whole cgroup), a project on
       a network drive, an app started inside a kill-on-close Job Object, and the macOS keychain
