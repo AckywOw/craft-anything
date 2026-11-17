@@ -33,6 +33,7 @@ craft-elf = { git = "https://github.com/storytold/craft-libs", rev = "fd91be74f0
 craft-pe = { git = "https://github.com/storytold/craft-libs", rev = "83cb1133dd2bdd0d655ba2300f88863f0f53db0b", features = ["serde"] }
 craft-macho = { git = "https://github.com/storytold/craft-libs", rev = "83cb1133dd2bdd0d655ba2300f88863f0f53db0b", features = ["serde"] }
 craft-sourcemap = { git = "https://github.com/storytold/craft-libs", rev = "c9a367b45b8d4ab688165139fde4795fa19589cf" }
+craft-wasm = { git = "https://github.com/storytold/craft-libs", rev = "75c4ca9ffc18b074d4d5fbc24a765ed99662978a" }
 craft-plist = { git = "https://github.com/storytold/craft-libs", rev = "28561846057d88b8c2454b677856081707109631" }
 craft-sniff = { git = "https://github.com/storytold/craft-libs", rev = "070005125f0af1a5ae4a59002270e5849505bfc0" }
 thiserror = "2"
