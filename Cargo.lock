@@ -1341,6 +1341,7 @@ dependencies = [
  "craft-anything-testkit",
  "craft-mime",
  "craft-plist",
+ "craft-tar",
  "lzma-rs",
  "miniz_oxide 0.8.9",
  "object 0.36.7",
@@ -1515,6 +1516,14 @@ dependencies = [
 name = "craft-sniff"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=070005125f0af1a5ae4a59002270e5849505bfc0#070005125f0af1a5ae4a59002270e5849505bfc0"
+
+[[package]]
+name = "craft-tar"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=595de281a29a0d67a087e635fd0ccf3d308c08be#595de281a29a0d67a087e635fd0ccf3d308c08be"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "craft-update"
