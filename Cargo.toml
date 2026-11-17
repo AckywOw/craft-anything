@@ -30,7 +30,7 @@ craft-anything-testkit = { path = "crates/testkit" }
 # Shared unwrapped standard Base64 encoding; decoding keeps format-specific validation.
 craft-mime = { git = "https://github.com/storytold/craft-libs", rev = "de97c35f2b2af01c62371647e57a6affeab456fd" }
 # Lenient ZIP inspection with all existing compression methods and serialized listings.
-craft-zip = { git = "https://github.com/storytold/craft-libs", rev = "84376840546713e8dc4c9eaa7f2bd383f9ffef3e", features = ["lenient", "lenient-bzip2", "lenient-lzma", "lenient-zstd", "serde"] }
+craft-zip = { git = "https://github.com/storytold/craft-libs", rev = "1928693fbb7a4f8e6b945e614b2fac3e181476ea", features = ["lenient", "lenient-bzip2", "lenient-lzma", "lenient-zstd", "serde"] }
 # Shared bounded TAR/CPIO listing, including current compatibility fixes.
 craft-tar = { git = "https://github.com/storytold/craft-libs", rev = "42bb9d35bba5c1074cce44fbc157785f3d29ad90", features = ["serde"] }
 # XML plist reader; prerequisite craft-libs #1633 (repin after merge).

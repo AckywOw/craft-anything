@@ -1614,7 +1614,7 @@ dependencies = [
 [[package]]
 name = "craft-zip"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=84376840546713e8dc4c9eaa7f2bd383f9ffef3e#84376840546713e8dc4c9eaa7f2bd383f9ffef3e"
+source = "git+https://github.com/storytold/craft-libs?rev=1928693fbb7a4f8e6b945e614b2fac3e181476ea#1928693fbb7a4f8e6b945e614b2fac3e181476ea"
 dependencies = [
  "bzip2-rs",
  "flate2",
