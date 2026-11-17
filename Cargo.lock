@@ -1349,6 +1349,7 @@ dependencies = [
  "craft-plist",
  "craft-sourcemap",
  "craft-tar",
+ "craft-wasm",
  "lzma-rs",
  "miniz_oxide 0.8.9",
  "object 0.36.7",
@@ -1619,6 +1620,17 @@ dependencies = [
  "winreg 0.55.0",
  "winsafe",
  "zip",
+]
+
+[[package]]
+name = "craft-wasm"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=1928693fbb7a4f8e6b945e614b2fac3e181476ea#1928693fbb7a4f8e6b945e614b2fac3e181476ea"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+ "wasmparser 0.261.0",
+ "wasmprinter 0.261.0",
 ]
 
 [[package]]
