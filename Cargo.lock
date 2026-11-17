@@ -1341,6 +1341,7 @@ dependencies = [
  "craft-anything-testkit",
  "craft-mime",
  "craft-plist",
+ "craft-zip",
  "lzma-rs",
  "miniz_oxide 0.8.9",
  "object 0.36.7",
@@ -1538,6 +1539,21 @@ dependencies = [
  "verifysign",
  "winreg 0.55.0",
  "winsafe",
+ "zip",
+]
+
+[[package]]
+name = "craft-zip"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=84376840546713e8dc4c9eaa7f2bd383f9ffef3e#84376840546713e8dc4c9eaa7f2bd383f9ffef3e"
+dependencies = [
+ "bzip2-rs",
+ "flate2",
+ "lzma-rs",
+ "miniz_oxide 0.8.9",
+ "ruzstd",
+ "serde",
+ "thiserror 2.0.21",
  "zip",
 ]
 
