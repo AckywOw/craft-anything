@@ -22,8 +22,8 @@ fn fake_cdp() -> (String, Arc<AtomicBool>) {
     (url, ws_seen)
 }
 
-/// Like [`fake_cdp`], with an optional `Page.javascriptDialogOpening` on the first Page/Debugger
-/// enable. The third flag is set when the client answers it with `Page.handleJavaScriptDialog`.
+/// Like [`fake_cdp`], with an optional `Page.javascriptDialogOpening` on Page.enable.
+/// The third flag is set when the client answers it with `Page.handleJavaScriptDialog`.
 fn fake_cdp_with_dialogs(dialog: bool) -> (String, Arc<AtomicBool>, Arc<AtomicBool>) {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -331,6 +331,46 @@ fn module_trace_reports_a_page_dialog() {
     let (url, _ws_seen, answered) = fake_cdp_with_dialogs(true);
     let e = Engine::new(crate::testing::session());
     let v = call(&e, "web_modules_trace", json!({"cdp_endpoint": url, "watch_ms": 50})).unwrap();
+    assert_eq!(v["result"]["dialogs"], json!([{"type": "confirm", "message": "Delete everything?", "answered": "dismissed"}]));
+    assert!(v["summary"].as_str().unwrap().contains("confirm question"), "{}", v["summary"]);
+    assert!(wait_answered(&answered), "the page's confirm must be answered so the page can go on");
+}
+
+#[test]
+fn bundle_analysis_answers_a_page_dialog_and_reports_it() {
+    let (url, _ws_seen, answered) = fake_cdp_with_dialogs(true);
+    let e = Engine::new(crate::testing::session());
+    let v = call(&e, "web_page_js_analyze", json!({"cdp_endpoint": url, "watch_ms": 100})).unwrap();
+    assert_eq!(v["result"]["dialogs"], json!([{"type": "confirm", "message": "Delete everything?", "answered": "dismissed"}]));
+    assert!(v["summary"].as_str().unwrap().contains("confirm question"), "{}", v["summary"]);
+    assert!(wait_answered(&answered), "the page's confirm must be answered so the page can go on");
+}
+
+#[test]
+fn page_watch_answers_a_page_dialog_and_reports_it() {
+    let (url, _ws_seen, answered) = fake_cdp_with_dialogs(true);
+    let e = Engine::new(crate::testing::session());
+    let v = call(&e, "web_page_watch", json!({"cdp_endpoint": url, "watch_ms": 100})).unwrap();
+    assert_eq!(v["result"]["dialogs"], json!([{"type": "confirm", "message": "Delete everything?", "answered": "dismissed"}]));
+    assert!(v["summary"].as_str().unwrap().contains("confirm question"), "{}", v["summary"]);
+    assert!(wait_answered(&answered), "the page's confirm must be answered so the page can go on");
+}
+
+#[test]
+fn webmcp_discovery_answers_a_page_dialog_and_reports_it() {
+    let (url, _ws_seen, answered) = fake_cdp_with_dialogs(true);
+    let e = Engine::new(crate::testing::session());
+    let v = call(&e, "web_mcp_tools_list", json!({"cdp_endpoint": url, "watch_ms": 10})).unwrap();
+    assert_eq!(v["result"]["dialogs"], json!([{"type": "confirm", "message": "Delete everything?", "answered": "dismissed"}]));
+    assert!(v["summary"].as_str().unwrap().contains("confirm question"), "{}", v["summary"]);
+    assert!(wait_answered(&answered), "the page's confirm must be answered so the page can go on");
+}
+
+#[test]
+fn screenshot_answers_a_page_dialog_and_reports_it() {
+    let (url, _ws_seen, answered) = fake_cdp_with_dialogs(true);
+    let e = Engine::new(crate::testing::session());
+    let v = call(&e, "web_page_screenshot_take", json!({"cdp_endpoint": url})).unwrap();
     assert_eq!(v["result"]["dialogs"], json!([{"type": "confirm", "message": "Delete everything?", "answered": "dismissed"}]));
     assert!(v["summary"].as_str().unwrap().contains("confirm question"), "{}", v["summary"]);
     assert!(wait_answered(&answered), "the page's confirm must be answered so the page can go on");

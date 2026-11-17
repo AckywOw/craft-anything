@@ -1036,7 +1036,7 @@ fn web_page_js_analyze(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, T
     let targets = cdp::json_list(&browser.endpoint, &dl)?;
     let target = web_common::pick_target(&targets, p.target_id.as_deref(), Some("page"))?;
     let page_url = web_common::sanitize_url(target.get("url").and_then(Value::as_str).unwrap_or_default());
-    let mut client = web_common::connect_target(&browser, target, PAGE_MAX_MESSAGE, &dl)?;
+    let mut client = web_common::connect_target_answering_dialogs(&browser, target, PAGE_MAX_MESSAGE, &dl)?;
     let flags = CaptureFlags { script_sources: true, network: false, console: false, ..CaptureFlags::default() };
     let mut secrets = Secrets::new(&[]);
     let cap = capture_page(&mut client, &page_url, flags, p.watch_ms, &mut secrets, ctx, &dl);
@@ -1080,11 +1080,13 @@ fn web_page_js_analyze(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, T
         o.insert("origin".into(), json!(page_url));
         o.insert("source_maps".into(), json!(source_maps));
         o.insert("scripts_seen".into(), json!(cap.scripts.len()));
+        o.insert("dialogs".into(), cap.result["dialogs"].clone());
     }
     let summary = format!(
-        "Analysed {} script(s) from {page_url}: {total_modules} module(s), {endpoints} endpoint(s), {routes} route(s){}.",
+        "Analysed {} script(s) from {page_url}: {total_modules} module(s), {endpoints} endpoint(s), {routes} route(s){}.{}",
         cap.scripts.len(),
-        if bundlers.is_empty() { String::new() } else { format!(", bundled with {}", bundlers.join("/")) }
+        if bundlers.is_empty() { String::new() } else { format!(", bundled with {}", bundlers.join("/")) },
+        web_common::dialogs_said_in(&cap.result["dialogs"])
     );
     let ev = EvidenceBuilder::new(
         "web_page_js_analyze",
@@ -1233,7 +1235,7 @@ fn web_page_watch(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolEr
     let targets = cdp::json_list(&browser.endpoint, &dl)?;
     let target = web_common::pick_target(&targets, p.target_id.as_deref(), Some("page"))?;
     let page_url = web_common::sanitize_url(target.get("url").and_then(Value::as_str).unwrap_or_default());
-    let mut client = web_common::connect_target(&browser, target, PAGE_MAX_MESSAGE, &dl)?;
+    let mut client = web_common::connect_target_answering_dialogs(&browser, target, PAGE_MAX_MESSAGE, &dl)?;
     let flags = CaptureFlags { network: true, console: true, websocket_outlines: p.with_websocket_outlines, ..CaptureFlags::default() };
     let mut secrets = Secrets::new(&p.hidden_values);
     let cap = capture_page(&mut client, &page_url, flags, p.watch_ms, &mut secrets, ctx, &dl);
@@ -1241,7 +1243,11 @@ fn web_page_watch(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolEr
     let cap = cap?;
     let req_n = cap.result["network"]["request_count"].as_u64().unwrap_or(0);
     let con_n = cap.result["console"]["count"].as_u64().unwrap_or(0);
-    let summary = format!("Watched {page_url} for {}ms: {req_n} request outline(s), {con_n} console entr(y/ies).", p.watch_ms);
+    let summary = format!(
+        "Watched {page_url} for {}ms: {req_n} request outline(s), {con_n} console entr(y/ies).{}",
+        p.watch_ms,
+        web_common::dialogs_said_in(&cap.result["dialogs"])
+    );
     let ev = passive_evidence(
         "web_page_watch",
         ctx.session.clean_room(),
@@ -1289,13 +1295,15 @@ fn web_mcp_tools_list(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
     let targets = cdp::json_list(&browser.endpoint, &dl)?;
     let target = web_common::pick_target(&targets, p.target_id.as_deref(), Some("page"))?;
     let page_url = web_common::sanitize_url(target.get("url").and_then(Value::as_str).unwrap_or_default());
-    let mut client = web_common::connect_target(&browser, target, PAGE_MAX_MESSAGE, &dl)?;
+    let mut client = web_common::connect_target_answering_dialogs(&browser, target, PAGE_MAX_MESSAGE, &dl)?;
+    let mut dialogs = Vec::new();
     let supported = client.call("WebMCP.enable", json!({}), None, &dl);
     let (available, tools, note) = match supported {
         Ok(_) => {
             let window = window_deadline(ctx, p.watch_ms, &dl);
             let _ = client.pump_until(&window);
             let events = client.take_events();
+            dialogs = web_common::dialogs_from(&events);
             let mut tools: Vec<Value> = Vec::new();
             for ev in events.iter().filter(|e| e.method == "WebMCP.toolsAdded") {
                 for t in ev.params.get("tools").and_then(Value::as_array).into_iter().flatten().take(500) {
@@ -1309,19 +1317,21 @@ fn web_mcp_tools_list(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, To
         }
         Err(e) => return cleanup_then_err(&mut client, &dl, e),
     };
+    dialogs.extend(web_common::dialogs_from(&client.take_events()));
     cleanup(&mut client, &dl);
-    let summary = if available {
+    let mut summary = if available {
         format!("WebMCP on {page_url}: {} tool(s) advertised.", tools.len())
     } else {
         format!("WebMCP is not supported by the browser at {}.", browser.endpoint.origin)
     };
+    summary.push_str(&web_common::dialogs_said(&dialogs));
     let ev = EvidenceBuilder::new(
         "web_mcp_tools_list",
         Subject { kind: "website".into(), sha256: None, name: Some(page_url.clone()) },
         browser_env(ctx.session.clean_room(), &browser),
     )
     .params(json!({"endpoint": browser.endpoint.origin}))
-    .result(json!({"origin": page_url, "webmcp_supported": available, "tools": tools, "note": note}))
+    .result(json!({"origin": page_url, "webmcp_supported": available, "tools": tools, "note": note, "dialogs": dialogs}))
     .summary(summary)
     .confidence(Confidence::Observed)
     .authority(Authority::EarlierRecord)
@@ -1364,9 +1374,9 @@ fn web_page_screenshot_take(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutp
     let targets = cdp::json_list(&browser.endpoint, &dl)?;
     let target = web_common::pick_target(&targets, p.target_id.as_deref(), Some("page"))?;
     let page_url = web_common::sanitize_url(target.get("url").and_then(Value::as_str).unwrap_or_default());
-    let mut client = web_common::connect_target(&browser, target, PAGE_MAX_MESSAGE, &dl)?;
-    let _ = client.call("Page.enable", json!({}), None, &dl);
+    let mut client = web_common::connect_target_answering_dialogs(&browser, target, PAGE_MAX_MESSAGE, &dl)?;
     let shot = client.call("Page.captureScreenshot", json!({"format": "png"}), None, &dl);
+    let dialogs = web_common::dialogs_from(&client.take_events());
     cleanup(&mut client, &dl);
     let shot = shot?;
     let data = shot
@@ -1375,14 +1385,15 @@ fn web_page_screenshot_take(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutp
         .ok_or_else(|| ToolError::new(craft_anything_evidence::ErrorCode::GarbledOutput, "the browser returned no screenshot data"))?;
     let bytes = web_common::b64_decode(data)?;
     let artifact = web_common::png_artifact(&bytes)?;
-    let summary = format!("Captured a {}×{} PNG of {page_url} ({} bytes).", artifact["width"], artifact["height"], bytes.len());
+    let summary =
+        format!("Captured a {}×{} PNG of {page_url} ({} bytes).{}", artifact["width"], artifact["height"], bytes.len(), web_common::dialogs_said(&dialogs));
     let ev = EvidenceBuilder::new(
         "web_page_screenshot_take",
         Subject { kind: "website".into(), sha256: None, name: Some(page_url.clone()) },
         browser_env(ctx.session.clean_room(), &browser),
     )
     .params(json!({"endpoint": browser.endpoint.origin, "target_id": p.target_id}))
-    .result(json!({"origin": page_url, "screenshot": artifact}))
+    .result(json!({"origin": page_url, "screenshot": artifact, "dialogs": dialogs}))
     .summary(summary)
     .confidence(Confidence::Observed)
     .authority(Authority::EarlierRecord)
