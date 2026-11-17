@@ -1614,7 +1614,7 @@ dependencies = [
 [[package]]
 name = "craft-wasm"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=476f9d3bc3b71ff514de7fbcc745c17eb0065dee#476f9d3bc3b71ff514de7fbcc745c17eb0065dee"
+source = "git+https://github.com/storytold/craft-libs?rev=1928693fbb7a4f8e6b945e614b2fac3e181476ea#1928693fbb7a4f8e6b945e614b2fac3e181476ea"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
