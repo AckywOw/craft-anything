@@ -21,7 +21,7 @@ const PAUSE: Duration = Duration::from_millis(20);
 /// The project's build lock, held until dropped.
 #[derive(Debug)]
 pub struct BuildLock {
-    _file: File,
+    file: File,
 }
 
 impl BuildLock {
@@ -35,13 +35,22 @@ impl BuildLock {
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path)?;
         for i in 0..TRIES {
             match file.try_lock() {
-                Ok(()) => return Ok(Some(BuildLock { _file: file })),
+                Ok(()) => return Ok(Some(BuildLock { file })),
                 Err(TryLockError::WouldBlock) if i + 1 < TRIES => std::thread::sleep(PAUSE),
                 Err(TryLockError::WouldBlock) => return Ok(None),
                 Err(TryLockError::Error(e)) => return Err(e),
             }
         }
         Ok(None)
+    }
+}
+
+impl Drop for BuildLock {
+    /// Let go now, not when the file's last copy closes: a program another thread is starting has a
+    /// copy of every open file until it runs (Unix, between fork and exec), and the lock would stay
+    /// with it.
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
     }
 }
 
@@ -55,8 +64,21 @@ pub fn path(root: &Path) -> PathBuf {
 /// no build holding it.
 pub fn held(root: &Path) -> bool {
     let Ok(file) = OpenOptions::new().read(true).open(path(root)) else { return false };
+    held_through(&file)
+}
+
+/// [`held`], looking through `file` (the lock file, opened).
+fn held_through(file: &File) -> bool {
     // Shared, so two looks at once don't count each other as a build.
-    matches!(file.try_lock_shared(), Err(TryLockError::WouldBlock))
+    match file.try_lock_shared() {
+        // Let go at once, as a build does (see `BuildLock`'s drop).
+        Ok(()) => {
+            let _ = file.unlock();
+            false
+        }
+        Err(TryLockError::WouldBlock) => true,
+        Err(TryLockError::Error(_)) => false,
+    }
 }
 
 #[cfg(test)]
@@ -101,6 +123,26 @@ mod tests {
         let other = OpenOptions::new().read(true).open(path(&ws.root)).unwrap();
         other.try_lock_shared().unwrap();
         assert!(!held(&ws.root));
+    }
+
+    /// A program another thread is starting holds a copy of every open file until it runs (Unix:
+    /// between fork and exec), and an OS lock lives as long as any copy is open. The lock must still
+    /// end when the build or the look does, not when that program gets going.
+    #[test]
+    fn a_copy_of_the_lock_left_in_a_program_starting_doesnt_hold_the_project() {
+        let (_d, ws) = project();
+        let lock = BuildLock::take(&ws).unwrap().expect("free");
+        let starting = lock.file.try_clone().unwrap();
+        drop(lock);
+        assert!(!held(&ws.root), "the build's lock ended with it");
+        drop(starting);
+
+        let look = OpenOptions::new().read(true).open(path(&ws.root)).unwrap();
+        let starting = look.try_clone().unwrap();
+        assert!(!held_through(&look));
+        drop(look);
+        assert!(BuildLock::take(&ws).unwrap().is_some(), "a look's lock ended with the look");
+        drop(starting);
     }
 
     #[test]

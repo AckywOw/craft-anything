@@ -303,7 +303,20 @@ fn new_token() -> String {
 #[derive(Debug)]
 pub struct Staged {
     pub exe: PathBuf,
-    _in_use: File,
+    _in_use: InUse,
+}
+
+/// A shared hold on a staged copy's [`IN_USE`] file, until dropped.
+#[derive(Debug)]
+pub struct InUse(File);
+
+impl Drop for InUse {
+    /// Let go now, not when the file's last copy closes: a program another thread is starting has a
+    /// copy of every open file until it runs (Unix, between fork and exec), and the hold would stay
+    /// with it, so a cleanup would leave the copy behind.
+    fn drop(&mut self) {
+        let _ = self.0.unlock();
+    }
 }
 
 /// Copy `cli` into its own folder under `staging`, keeping its file name (the CLI finds itself by
@@ -347,11 +360,11 @@ fn staging_key(meta: &std::fs::Metadata) -> String {
 }
 
 /// Take a shared hold on a staged copy's lock file. Only a cleanup takes it whole, for a moment.
-fn hold(path: &Path) -> Result<File, ToolError> {
+fn hold(path: &Path) -> Result<InUse, ToolError> {
     let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(path).map_err(|e| ToolError::io(path.display(), e))?;
     for _ in 0..50 {
         match file.try_lock_shared() {
-            Ok(()) => return Ok(file),
+            Ok(()) => return Ok(InUse(file)),
             Err(TryLockError::WouldBlock) => std::thread::sleep(Duration::from_millis(20)),
             Err(TryLockError::Error(e)) => return Err(ToolError::io(path.display(), e)),
         }
@@ -385,7 +398,7 @@ fn remove_old_copies(staging: &Path, keep: &str) {
 
 /// For the runner: hold the staged copy it runs from (its folder's [`IN_USE`] file), so no
 /// cleanup removes it while the build runs. `None` when it isn't run from a staged copy.
-pub fn hold_staged_copy() -> Option<File> {
+pub fn hold_staged_copy() -> Option<InUse> {
     let exe = std::env::current_exe().ok()?;
     let lock = exe.parent()?.join(IN_USE);
     if !lock.is_file() {
@@ -585,6 +598,24 @@ mod tests {
         assert!(!held_dir.exists(), "and removed once nothing holds it");
         assert_eq!(std::fs::read_dir(&staging).unwrap().count(), 1);
         drop(fourth);
+    }
+
+    /// A program another thread is starting holds a copy of every open file until it runs (Unix:
+    /// between fork and exec); a copy of the hold left there mustn't keep an old copy from cleanup.
+    #[test]
+    fn a_hold_ends_when_dropped_even_with_a_copy_of_its_file_open() {
+        let d = tempfile::tempdir().unwrap();
+        let cli = d.path().join(craft_anything_platform::which::cli_file_name());
+        std::fs::write(&cli, b"first build").unwrap();
+        let staging = d.path().join("staging");
+        let first = stage(&cli, &staging).unwrap();
+        let first_dir = first.exe.parent().unwrap().to_path_buf();
+        let starting = first._in_use.0.try_clone().unwrap();
+        drop(first);
+        std::fs::write(&cli, b"second, longer build").unwrap();
+        let second = stage(&cli, &staging).unwrap();
+        assert!(!first_dir.exists(), "the older copy nothing holds is removed");
+        drop((second, starting));
     }
 
     #[test]
