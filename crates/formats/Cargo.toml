@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 craft-java-class = { workspace = true }
+craft-pcap = { workspace = true }
 craft-wasm = { workspace = true }
 craft-har = { workspace = true }
 craft-jsonc = { workspace = true }
@@ -20,6 +21,7 @@ craft-elf = { workspace = true }
 craft-macho = { workspace = true }
 craft-mime = { workspace = true }
 craft-plist = { workspace = true }
+craft-zip = { workspace = true }
 craft-tar = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }

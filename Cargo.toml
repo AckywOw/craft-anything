@@ -12,6 +12,8 @@ repository = "https://github.com/storytold/craft-anything"
 [workspace.dependencies]
 craft-java-class = { git = "https://github.com/storytold/craft-libs", rev = "d118983bf922ac96c68b885dc55da30435adbc7d" }
 craft-har = { git = "https://github.com/storytold/craft-libs", rev = "d118983bf922ac96c68b885dc55da30435adbc7d" }
+craft-pcap = { git = "https://github.com/storytold/craft-libs", rev = "d9f0ada8b342f2164b0c4d0c831f5d5da30e8713" }
+craft-har = { git = "https://github.com/storytold/craft-libs", rev = "6792748feaf14985e2cc97a0e258468621d5c02d" }
 # internal
 craft-anything-evidence = { path = "crates/evidence" }
 craft-anything-formats = { path = "crates/formats" }
@@ -30,6 +32,9 @@ craft-anything-testkit = { path = "crates/testkit" }
 # external
 # Shared unwrapped standard Base64 encoding; decoding keeps format-specific validation.
 craft-mime = { git = "https://github.com/storytold/craft-libs", rev = "d118983bf922ac96c68b885dc55da30435adbc7d" }
+craft-mime = { git = "https://github.com/storytold/craft-libs", rev = "de97c35f2b2af01c62371647e57a6affeab456fd" }
+# Lenient ZIP inspection with all existing compression methods and serialized listings.
+craft-zip = { git = "https://github.com/storytold/craft-libs", rev = "1928693fbb7a4f8e6b945e614b2fac3e181476ea", features = ["lenient", "lenient-bzip2", "lenient-lzma", "lenient-zstd", "serde"] }
 # Shared bounded TAR/CPIO listing, including current compatibility fixes.
 craft-tar = { git = "https://github.com/storytold/craft-libs", rev = "d118983bf922ac96c68b885dc55da30435adbc7d", features = ["serde"] }
 # XML plist reader; prerequisite craft-libs #1633 (repin after merge).
