@@ -75,11 +75,12 @@ fn bench(port: Option<u16>) -> Bench {
     let config = dir.path().join("config");
     std::fs::create_dir_all(&config).unwrap();
     let ai = match port {
-        // Its answer may take 2 s to start: a run that's asked to pause while it waits sees the
-        // pause when that wait ends, instead of five minutes later.
-        Some(port) => format!(
-            "[[backends]]\nname = \"API\"\nkind = \"openai_compatible\"\nmodel = \"test-model\"\nbase_url = \"http://127.0.0.1:{port}/v1\"\nenabled = true\ntimeout_secs = 2\n"
-        ),
+        // The default time limit (five minutes): a pause ends the wait for its answer at once.
+        Some(port) => {
+            format!(
+                "[[backends]]\nname = \"API\"\nkind = \"openai_compatible\"\nmodel = \"test-model\"\nbase_url = \"http://127.0.0.1:{port}/v1\"\nenabled = true\n"
+            )
+        }
         None => "[[backends]]\nname = \"Agent\"\nkind = \"agent_cli\"\nmodel = \"claude-code\"\n".to_string(),
     };
     // Only an API builder is saved where the runner reads its settings; the agent app is this
