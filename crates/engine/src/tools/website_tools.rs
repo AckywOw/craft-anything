@@ -253,18 +253,7 @@ fn web_site_open(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
 
 /// The summary's sentence on dialogs the page opened by itself while it loaded (empty when none).
 fn dialogs_said(dialogs: &Value) -> String {
-    let list = dialogs.as_array().map(Vec::as_slice).unwrap_or_default();
-    let Some(first) = list.first() else { return String::new() };
-    let kind = match first["type"].as_str() {
-        Some("alert") => "an alert",
-        Some("confirm") => "a confirm question",
-        Some("prompt") => "a prompt",
-        Some("beforeunload") => "a leave-page question",
-        _ => "a dialog",
-    };
-    let message = first["message"].as_str().unwrap_or_default();
-    let more = if list.len() > 1 { format!(" and {} more", list.len() - 1) } else { String::new() };
-    format!(" The page opened {kind} by itself (\"{message}\"){more}; it was {} so the page could go on.", first["answered"].as_str().unwrap_or("answered"))
+    web_common::dialogs_said_in(dialogs)
 }
 
 /// Explicit signed-out opens must discard even a matching browser's accumulated state.
@@ -406,7 +395,6 @@ pub fn page_health(events: &[CdpEvent]) -> Value {
     let mut urls: std::collections::HashMap<String, String> = std::collections::HashMap::new();
     let mut errors: Vec<Value> = Vec::new();
     let mut failed: Vec<Value> = Vec::new();
-    let mut dialogs: Vec<Value> = Vec::new();
     let mut add_error = |kind: &str, text: String, url: String| {
         if !text.is_empty() && errors.len() < 30 && !errors.iter().any(|e| e["text"] == text.as_str()) {
             errors.push(json!({"kind": kind, "text": text, "url": shown_url(&url)}));
@@ -446,13 +434,10 @@ pub fn page_health(events: &[CdpEvent]) -> Value {
                 let url = urls.get(&str_at(p, "/requestId")).cloned().unwrap_or_default();
                 failed.push(json!({"url": shown_url(&url), "error": p["errorText"], "type": p["type"]}));
             }
-            cdp::DIALOG_OPENING if dialogs.len() < 30 => {
-                let answered = if cdp::dialog_answer(p)["accept"] == true { "accepted" } else { "dismissed" };
-                dialogs.push(json!({"type": p["type"], "message": line(&str_at(p, "/message")), "answered": answered}));
-            }
             _ => {}
         }
     }
+    let dialogs = web_common::dialogs_from(events);
     let mut health = json!({"errors": errors, "failed_requests": failed});
     if !dialogs.is_empty()
         && let Some(o) = health.as_object_mut()

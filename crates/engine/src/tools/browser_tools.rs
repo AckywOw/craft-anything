@@ -345,6 +345,8 @@ pub(crate) fn capture_page(
     let window = window_deadline(ctx, watch_ms, dl);
     client.pump_until(&window)?;
     let events = client.take_events();
+    let mut dialogs = web_common::dialogs_from(&events);
+    web_common::redact_dialogs(&mut dialogs, secrets);
 
     // Frame tree → origins.
     let frames = client.call("Page.getFrameTree", json!({}), None, dl).unwrap_or(Value::Null);
@@ -397,6 +399,7 @@ pub(crate) fn capture_page(
         "watch_ms": watch_ms,
         "dropped_events": dropped,
         "secret_redactions": secrets.redactions,
+        "dialogs": dialogs,
     });
     Ok(PageCapture { result, scripts, dropped })
 }
@@ -905,7 +908,7 @@ fn web_page_show(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
     let targets = cdp::json_list(&browser.endpoint, &dl)?;
     let target = web_common::pick_target(&targets, p.target_id.as_deref(), Some("page"))?;
     let page_url = web_common::sanitize_url(target.get("url").and_then(Value::as_str).unwrap_or_default());
-    let mut client = web_common::connect_target(&browser, target, PAGE_MAX_MESSAGE, &dl)?;
+    let mut client = web_common::connect_target_answering_dialogs(&browser, target, PAGE_MAX_MESSAGE, &dl)?;
     let flags = CaptureFlags {
         accessibility_text: p.with_accessibility_text,
         console_text: p.with_console_text,
@@ -923,8 +926,9 @@ fn web_page_show(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, ToolErr
     let scripts_n = cap.result["scripts"].as_array().map_or(0, Vec::len);
     let req_n = cap.result["network"]["request_count"].as_u64().unwrap_or(0);
     let summary = format!(
-        "Inspected {page_url}: {scripts_n} script(s), {req_n} request outline(s), {} frame origin(s).",
-        cap.result["frame_origins"].as_array().map_or(0, Vec::len)
+        "Inspected {page_url}: {scripts_n} script(s), {req_n} request outline(s), {} frame origin(s).{}",
+        cap.result["frame_origins"].as_array().map_or(0, Vec::len),
+        web_common::dialogs_said_in(&cap.result["dialogs"])
     );
     let ev = passive_evidence(
         "web_page_show",
@@ -2303,7 +2307,7 @@ fn web_walkthrough_record(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput
     let targets = cdp::json_list(&browser.endpoint, &dl)?;
     let target = web_common::pick_target(&targets, p.target_id.as_deref(), Some("page"))?;
     let start_url = web_common::sanitize_url(target.get("url").and_then(Value::as_str).unwrap_or_default());
-    let mut client = web_common::connect_target(&browser, target, PAGE_MAX_MESSAGE, &dl)?;
+    let mut client = web_common::connect_target_answering_dialogs(&browser, target, PAGE_MAX_MESSAGE, &dl)?;
     let declared: Vec<String> = p.hidden_values.iter().chain(p.storage.values()).cloned().collect();
     let mut secrets = Secrets::new(&declared);
     let _ = client.call("Page.enable", json!({}), None, &dl);
@@ -2391,9 +2395,11 @@ fn web_walkthrough_record(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput
     let final_artifacts =
         if p.capture.at_end.is_empty() { Value::Null } else { capture_artifacts(&mut client, &p.capture.at_end, 1024 * 1024, &mut secrets, &dl) };
     keep(&mut client, steps.len().checked_sub(1), &mut events);
+    let all: Vec<cdp::CdpEvent> = events.iter().map(|(_, e)| e.clone()).collect();
+    let mut dialogs = web_common::dialogs_from(&all);
+    web_common::redact_dialogs(&mut dialogs, &mut secrets);
     // Network capture over the whole run.
     let network = if p.capture_network {
-        let all: Vec<cdp::CdpEvent> = events.iter().map(|(_, e)| e.clone()).collect();
         let mut dropped = 0u64;
         collect_network(&mut client, &all, false, p.keep_bodies, &mut secrets, &dl, &mut dropped)
     } else {
@@ -2423,8 +2429,13 @@ fn web_walkthrough_record(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput
     cleanup(&mut client, &dl);
 
     let ok_steps = steps.iter().filter(|s| s["status"] == "ok").count();
-    let summary =
-        format!("Ran {} of {} scripted step(s) on {start_url}{}.", ok_steps, p.actions.len(), aborted.as_ref().map(|a| format!(" ({a})")).unwrap_or_default());
+    let summary = format!(
+        "Ran {} of {} scripted step(s) on {start_url}{}.{}",
+        ok_steps,
+        p.actions.len(),
+        aborted.as_ref().map(|a| format!(" ({a})")).unwrap_or_default(),
+        web_common::dialogs_said(&dialogs)
+    );
     let result = json!({
         "browser": {"product": browser.product, "started_by": if browser.launched { "craft-anything" } else { "external" }, "cleanup": if browser.launched { "closed" } else { "disconnected" }},
         "start_url": start_url,
@@ -2437,6 +2448,7 @@ fn web_walkthrough_record(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput
         "steps": steps,
         "network": network,
         "aborted": aborted,
+        "dialogs": dialogs,
         "secrets_hidden": p.hidden_values.len(),
         "secret_redactions": secrets.redactions,
     });
