@@ -29,6 +29,10 @@ mod parity_tests {
     fn frames_protocols_summaries_and_errors_match() {
         let frames = craft_anything_testkit::pcap::sample_frames();
         for data in [craft_anything_testkit::pcap::pcap(&frames), craft_anything_testkit::pcap::pcapng(&frames), vec![], b"not a capture".to_vec()] {
+            // Keep the retained admission oracle exercised, including truncated magic bytes.
+            for end in 0..=data.len() {
+                assert_eq!(legacy::is_capture(&data[..end]), is_capture(&data[..end]));
+            }
             assert_eq!(format!("{:?}", legacy::summarize(&data, &|| false)), format!("{:?}", summarize(&data, &|| false)));
             assert_eq!(format!("{:?}", legacy::summarize(&data, &|| true)), format!("{:?}", summarize(&data, &|| true)));
             match (legacy::Capture::new(&data), Capture::new(&data)) {

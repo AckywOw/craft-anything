@@ -11,12 +11,15 @@ workspace = true
 
 [dependencies]
 craft-pcap = { workspace = true }
+craft-har = { workspace = true }
+craft-jsonc = { workspace = true }
 craft-sourcemap = { workspace = true }
 craft-pe = { workspace = true }
 craft-elf = { workspace = true }
 craft-macho = { workspace = true }
 craft-mime = { workspace = true }
 craft-plist = { workspace = true }
+craft-tar = { workspace = true }
 thiserror = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }

@@ -1695,7 +1695,11 @@ Gaps found while using the app for real projects.
       with a plain error, while files at or under the cap page as before. The regression covers
       the cap and the boundary
       — claimed: AlexJoaquimPereira, branch bugfix/r2.9-build-file-read-cap
-- [ ] `build_file_edit` also reads the whole file into memory; cap it the same way
+- [x] `build_file_edit` read the whole project file into memory before replacing text; it now
+      uses the same 16 MiB cap as a read, refusing a larger file before it is loaded and leaving
+      it unchanged. A file at the cap still edits when the result fits the 8 MB write cap. Engine
+      regressions cover the over-cap refusal and the boundary
+      — claimed: AlexJoaquimPereira, branch bugfix/r2.9-build-file-edit-cap
 - [x] Choose Claude Code's folder (`CLAUDE_CONFIG_DIR`) per AI, so one computer can build with
       two Claude accounts; an app opened from the Dock never sees the shell's variable. Settings →
       AI (a typed folder, and Add another) and `ai folder`; live-checked from the CLI with an empty
@@ -1967,6 +1971,14 @@ Owner: open · Status: in progress
       — claimed: Afloat16, branch feature/r3.9-rgb9e5-textures-20261110
 - [ ] Unreal 5 and Oodle: IoStore packages, unversioned properties and Oodle-compressed paks
 - [ ] Game files: save pictures from IoStore containers (needs the Unreal 5 support above)
+- [x] A look at one game's folder or archive could land after the person picked another one, so
+      the old profile, archive list or file rows were shown under the new pick and a save could
+      name an item from the old game. Done: the button job carries its request, and a result for a
+      folder or archive no longer shown is ignored, including its error; UI regressions cover both
+      scopes and an ignored error
+      — claimed: AlexJoaquimPereira, branch bugfix/r3.9-game-files-stale-results
+- [ ] Pick game A, B, then A again while the first A look is still running: the older A result can
+      still land after the newer one. Correlate each look with a request id, not only the path
 - [x] Decode Unreal packed 10-bit normalized and 11-bit floating-point textures through the bounded picture exporter.
       — claimed: Afloat16, branch feature/r3.9-unreal-packed-textures-20261111
 - [x] Unreal: decode cooked half- and full-precision floating-point textures with the shared bounded pixel reader.
@@ -3137,10 +3149,21 @@ Owner: open · Status: in progress
 - [x] A page that opens an `alert` on load makes `web_site_open` time out (#2010): answer the
       page's JavaScript dialogs (accept `alert`/`beforeunload`, dismiss `confirm`/`prompt`) and say
       which ones it opened. — claimed: htcom-code, branch bugfix/r3.13-js-dialog-blocks-open
-- [ ] The tools that connect to a page on their own (`browser_tools.rs`: walkthroughs and
+- [x] The tools that connect to a page on their own (`browser_tools.rs`: walkthroughs and
       `web_page_show`; `web_runtime_tools.rs`; `electron_runtime_tools.rs`) don't answer JavaScript
       dialogs yet, so a page that opens one mid-run still stalls them: give them
-      `CdpClient::answering_dialogs` and report the dialogs the same way (#2010).
+      `CdpClient::answering_dialogs` and report the dialogs the same way (#2010). Done: they answer
+      the page's dialogs (alerts and leave-page questions accepted, confirm and prompt dismissed)
+      and list each one with its answer in the result and summary; fake-CDP regressions cover
+      `web_page_show`, a walkthrough, coverage measurement, listeners and the module graph.
+      — claimed: AlexJoaquimPereira, branch bugfix/r3.13-page-tools-dialogs
+- [x] `web_page_js_analyze` and `web_page_watch` still attach to a page without answering its
+      dialogs, as do `web_mcp_tools_list` and `web_page_screenshot_take`: a page that opens one
+      mid-run can still stall them. Done: all four use the answering connect, which enables Page
+      so Page.javascriptDialogOpening arrives; each result and summary lists the dialogs, with
+      declared secrets redacted where the tool has hidden values. Fake-CDP regressions cover all
+      four
+      — claimed: AlexJoaquimPereira, branch bugfix/r3.13-remaining-page-dialogs
 
 ---
 
