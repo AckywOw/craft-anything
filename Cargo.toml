@@ -10,7 +10,7 @@ rust-version = "1.97"
 repository = "https://github.com/storytold/craft-anything"
 
 [workspace.dependencies]
-craft-evm = { git = "https://github.com/storytold/craft-libs", rev = "5a74c5ef3637a885acdf553817b775a69b71f498" }
+craft-evm = { git = "https://github.com/storytold/craft-libs", rev = "383c52430ed0da0ef3a85ed251013efb8e431487" }
 # internal
 craft-anything-evidence = { path = "crates/evidence" }
 craft-anything-formats = { path = "crates/formats" }

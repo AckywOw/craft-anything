@@ -1512,7 +1512,7 @@ dependencies = [
 [[package]]
 name = "craft-evm"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=5a74c5ef3637a885acdf553817b775a69b71f498#5a74c5ef3637a885acdf553817b775a69b71f498"
+source = "git+https://github.com/storytold/craft-libs?rev=383c52430ed0da0ef3a85ed251013efb8e431487#383c52430ed0da0ef3a85ed251013efb8e431487"
 dependencies = [
  "serde",
  "serde_json",
