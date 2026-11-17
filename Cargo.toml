@@ -10,7 +10,7 @@ rust-version = "1.97"
 repository = "https://github.com/storytold/craft-anything"
 
 [workspace.dependencies]
-craft-pcap = { git = "https://github.com/storytold/craft-libs", rev = "33a83bab9b0cd594832aedd68fa7b3ae5c2eaaed" }
+craft-pcap = { git = "https://github.com/storytold/craft-libs", rev = "d9f0ada8b342f2164b0c4d0c831f5d5da30e8713" }
 craft-har = { git = "https://github.com/storytold/craft-libs", rev = "6792748feaf14985e2cc97a0e258468621d5c02d" }
 # internal
 craft-anything-evidence = { path = "crates/evidence" }
