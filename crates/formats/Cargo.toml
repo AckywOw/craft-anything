@@ -10,6 +10,7 @@ publish = false
 workspace = true
 
 [dependencies]
+craft-evm = { workspace = true }
 craft-jsonc = { workspace = true }
 craft-sourcemap = { workspace = true }
 craft-pe = { workspace = true }
