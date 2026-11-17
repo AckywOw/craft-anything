@@ -275,7 +275,7 @@ fn packets_fields_show(ctx: &mut Ctx<'_>, params: Value) -> Result<ToolOutput, T
     let limit = p.limit.clamp(1, 1000);
     let input = load(ctx, p.path.as_deref())?;
     ctx.report(None, format!("Decoding packets in {}", input.name));
-    let mut cap = Capture::new(&input.bytes).map_err(|e| format_err(e, "a packet capture"))?;
+    let mut cap = Capture::new(&input.bytes).map_err(|e| format_err(e.into(), "a packet capture"))?;
     let mut flows = FlowTable::default();
     let (mut total, mut matched) = (0u64, 0u64);
     let mut rows: Vec<Value> = Vec::new();
