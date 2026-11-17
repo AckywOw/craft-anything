@@ -10,6 +10,7 @@ publish = false
 workspace = true
 
 [dependencies]
+craft-sourcemap = { workspace = true }
 craft-pe = { workspace = true }
 craft-elf = { workspace = true }
 craft-macho = { workspace = true }
