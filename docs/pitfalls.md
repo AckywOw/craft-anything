@@ -570,6 +570,11 @@ but POSIX makes everything after `=` the header, so FreeBSD's `ps` printed one `
 ",ppid=" and every parent lookup came back empty. Give each column its own `-o` (`-o pid= -o ppid=`)
 when a header is renamed or blanked.
 
+**`cfg(unix)` tests assumed every Unix could capture a console program.** Two console-run tests
+from #1679 and #1702 failed every night on FreeBSD, whose capture was a stub that refused to run
+anything. A test gated on `unix` must only need what every Unix build has; FreeBSD now captures
+through pipes, as Windows does.
+
 ## Design
 
 **A source inventory limit came after expansion.** Taking five thousand names after collecting

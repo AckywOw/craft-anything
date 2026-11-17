@@ -789,12 +789,15 @@ yet, and the quick start is how every new person begins.
       the folder. Live in Debian 13 with Java set to a JDK's folder: Vineflower decompiled (before:
       "permission denied")
       — claimed: Fadlalla-ai, branch bugfix/r5.7-engine-path-folder
-- [ ] gdb, rizin sessions, adb, JADX, Apktool, Frida, tshark, lldb and the browser look up their program with
+- [x] gdb, rizin sessions, adb, JADX, Apktool, Frida, tshark, lldb and the browser look up their program with
       `engines::locate` and their own not-found message, so a folder set as their path without the
       program says it isn't installed rather than that the folder has no such program; use
       `Settings::engine_not_found` as the Java and disassembler tools do
-- [ ] A Java set for Ghidra (Settings → Engines, `engines.ghidra.java_home`) isn't used as the Java
-      runtime either, so Vineflower still says Java isn't installed with only that set
+      — claimed: justinjohn0306, branch bugfix/r5.5-engine-not-found-words
+- [x] A Java set for Ghidra (Settings → Engines, `engines.ghidra.java_home`) isn't used as the Java
+      runtime either, so Vineflower still says Java isn't installed with only that set. It now is
+      (`Settings::java_set_for_ghidra`), for JADX too, unless a path is set for Java itself
+      — claimed: justinjohn0306, branch bugfix/r5.7-ghidra-java-for-java-tools
 - [x] JADX doesn't use the Java runtime engine (the Java Ghidra's setup brings, or a Java path set in
       Settings → Engines): its launcher script finds Java only through `JAVA_HOME` or PATH, and
       neither is passed, so with no system Java, Java source of an Android class fails although
@@ -2774,6 +2777,8 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch bugfix/r3.12-sourcemap-annotation-spacing-1111
 - [x] Keep source map annotation URL suffixes intact.
       — claimed: Plastic-time, branch rrfz/bugfix-r3.12-annotation-20261110
+- [x] Use the legacy HTML script language to classify scripts without a type attribute.
+      — claimed: Plastic-time, branch bugfix/r3.12-html-legacy-script-language
 - [x] Require the exact module keyword in HTML script inventories while retaining whitespace trimming for classic MIME types.
       — claimed: Plastic-time, branch bugfix/r3.12-html-exact-module-keyword
 - [x] Match HTML script types against complete JavaScript MIME names and the exact module keyword.
@@ -3129,6 +3134,13 @@ Owner: open · Status: in progress
       nothing about the rest (#1811; `web_page_show`'s outlines were fixed in #1845): count the kept
       bodies and say how many were left out and why.
       — claimed: htcom-code, branch bugfix/r3.13-body-outline-cap
+- [x] A page that opens an `alert` on load makes `web_site_open` time out (#2010): answer the
+      page's JavaScript dialogs (accept `alert`/`beforeunload`, dismiss `confirm`/`prompt`) and say
+      which ones it opened. — claimed: htcom-code, branch bugfix/r3.13-js-dialog-blocks-open
+- [ ] The tools that connect to a page on their own (`browser_tools.rs`: walkthroughs and
+      `web_page_show`; `web_runtime_tools.rs`; `electron_runtime_tools.rs`) don't answer JavaScript
+      dialogs yet, so a page that opens one mid-run still stalls them: give them
+      `CdpClient::answering_dialogs` and report the dialogs the same way (#2010).
 
 ---
 
