@@ -1343,7 +1343,9 @@ dependencies = [
  "craft-jsonc",
  "craft-macho",
  "craft-mime",
+ "craft-pe",
  "craft-plist",
+ "craft-sourcemap",
  "lzma-rs",
  "miniz_oxide 0.8.9",
  "object 0.36.7",
@@ -1533,6 +1535,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-pe"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=83cb1133dd2bdd0d655ba2300f88863f0f53db0b#83cb1133dd2bdd0d655ba2300f88863f0f53db0b"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-plist"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=28561846057d88b8c2454b677856081707109631#28561846057d88b8c2454b677856081707109631"
@@ -1544,6 +1555,16 @@ dependencies = [
 name = "craft-sniff"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=070005125f0af1a5ae4a59002270e5849505bfc0#070005125f0af1a5ae4a59002270e5849505bfc0"
+
+[[package]]
+name = "craft-sourcemap"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=c9a367b45b8d4ab688165139fde4795fa19589cf#c9a367b45b8d4ab688165139fde4795fa19589cf"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "craft-update"

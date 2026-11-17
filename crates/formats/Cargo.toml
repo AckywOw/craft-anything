@@ -11,6 +11,8 @@ workspace = true
 
 [dependencies]
 craft-jsonc = { workspace = true }
+craft-sourcemap = { workspace = true }
+craft-pe = { workspace = true }
 craft-elf = { workspace = true }
 craft-macho = { workspace = true }
 craft-mime = { workspace = true }
