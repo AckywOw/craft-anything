@@ -1142,6 +1142,14 @@ impl Launch {
 
     /// Start the program as set up, leaving our Job Object too when `break_away` (Windows only).
     fn spawn_wrapped(&self, log: Option<&std::fs::File>, break_away: bool) -> std::io::Result<Box<dyn ChildWrapper>> {
+        // Set up again for each try: a wrapper adds its setup to the command each time it starts,
+        // and a second `setsid` in the same child fails (EPERM), so a retry after "Text file busy"
+        // would fail for a reason that isn't there.
+        spawn_retrying(|| self.wrapped(log, break_away)?.spawn())
+    }
+
+    /// The command [`spawn_wrapped`](Self::spawn_wrapped) starts, with its wrappers.
+    fn wrapped(&self, log: Option<&std::fs::File>, break_away: bool) -> std::io::Result<process_wrap::std::CommandWrap> {
         let mut cmd = std::process::Command::new(&self.program);
         cmd.args(&self.args).stdin(Stdio::null());
         use_search_path(&mut cmd);
@@ -1188,7 +1196,7 @@ impl Launch {
                 wrap.wrap(process_wrap::std::CreationFlags(flags));
             }
         }
-        spawn_retrying(|| wrap.spawn())
+        Ok(wrap)
     }
 }
 
@@ -1509,6 +1517,27 @@ mod launch_tests {
         assert!(!l.is_running());
         let text = std::fs::read_to_string(&log).unwrap();
         assert!(text.contains("out-line") && text.contains("err-line"), "{text}");
+    }
+
+    /// A detached start tried again after "Text file busy" (a program just written, still open for
+    /// writing for a moment) starts it, rather than failing its second `setsid` with EPERM.
+    #[cfg(unix)]
+    #[test]
+    fn a_detached_program_still_busy_being_written_starts_once_it_is_free() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let program = dir.path().join("just-written");
+        std::fs::write(&program, "#!/bin/sh\nexit 4\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o755)).unwrap();
+        let writing = std::fs::OpenOptions::new().append(true).open(&program).unwrap();
+        let done = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(40));
+            drop(writing);
+        });
+        let launched = Launch::new(&program).detached().start_watched();
+        done.join().unwrap();
+        let launched = launched.unwrap();
+        assert_eq!(launched.wait_timeout(Duration::from_secs(20)).map(|e| e.code), Some(Some(4)));
     }
 
     /// A program that prints far more than the cap keeps running to the end, and its log is cut
