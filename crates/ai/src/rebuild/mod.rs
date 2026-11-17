@@ -22,6 +22,7 @@ use crate::{AgentEvent, AiHub, BackendKind, Conversation, Role};
 use craft_anything_engine::inbox::{Answer, Inbox, InboxDir, Request};
 use craft_anything_engine::project::{Project, Purpose};
 use craft_anything_engine::questions::AskedQuestion;
+use craft_anything_engine::workspace::build_lock::{self, BuildLock};
 use craft_anything_engine::workspace::progress::{AppFingerprintCache, BuildProgress};
 use craft_anything_engine::workspace::{CheckResult, ProjectUsage, Status, TargetRef, Workspace};
 use craft_anything_engine::{CallOptions, Caller, CancelToken, Engine, ToolOutput};
@@ -264,13 +265,30 @@ pub struct RebuildRun {
     activity: Arc<activity::Activity>,
 }
 
+/// Take `ws`'s build lock for a run, or say why it can't start: another build holds the project,
+/// in this process or another (a second window, the command line).
+fn take_build_lock(ws: &Workspace) -> Result<BuildLock, ToolError> {
+    match BuildLock::take(ws) {
+        Ok(Some(lock)) => Ok(lock),
+        Ok(None) => Err(ToolError::new(ErrorCode::BadInput, BUILDING_ELSEWHERE).with_remediation("Wait for it to finish, or pause or stop it where it runs.")),
+        Err(e) => Err(ToolError::io(build_lock::path(&ws.root).display(), e)),
+    }
+}
+
+/// What a run says when another build holds its project.
+pub const BUILDING_ELSEWHERE: &str = "This project is already building, in another Craft Anything window or from the command line.";
+
 impl RebuildRun {
-    /// Start a run on a worker thread. Fails fast (before any work) when no coding agent is set up.
+    /// Start a run on a worker thread. Fails fast (before any work) when no coding agent is set up,
+    /// or when another build holds the project (its lock, [`BuildLock`]).
     pub fn start(hub: &AiHub, ws: Workspace, opts: RunOptions) -> Result<RebuildRun, ToolError> {
         // The project as it is now. A run that waited in the queue, or one started as the project's
         // last run was ending, holds a copy from before that run's last saves (its session), and
         // everything below, the worker's saves included, works from this copy.
         let mut ws = Workspace::open(&ws.root).unwrap_or(ws);
+        // Before anything below touches the project's files (waiting notes, the activity, a
+        // transcript): a build running elsewhere keeps them, and this one doesn't start (#1970).
+        let lock = take_build_lock(&ws)?;
         let cfg = hub.config();
         let entry = builder_backend(&cfg, opts.backend.as_deref().or_else(|| project_builder(&cfg, &ws)))?;
         // The person's choice of mode is a session setting. A run that waited its turn uses the mode
@@ -367,6 +385,9 @@ impl RebuildRun {
                 // The CLI can exit as soon as it sees completion: release the helper while its
                 // supervisor threads are still available to stop it.
                 drop(awake);
+                // Released before the run says it finished, so a run started as soon as it does
+                // (Continue, a note left waiting) can take the project.
+                drop(lock);
                 ctx.emit(RunEvent::Finished { ok, message, paused });
                 r2.store(false, Ordering::SeqCst);
             })

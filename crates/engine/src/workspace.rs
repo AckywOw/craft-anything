@@ -28,6 +28,7 @@ use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::sync::PoisonError;
 
+pub mod build_lock;
 pub mod progress;
 
 pub const MANIFEST: &str = "craft.json";

@@ -761,6 +761,13 @@ and recover them at startup against the latest committed AI table, rather than r
 After a successful full exit save, discard an older deferred snapshot so startup cannot replay it
 over the newer app settings.
 
+**"Not running here" read as "not running".** The app called a project whose saved status said
+Building "stopped part-way" whenever it had no run of its own for it, so a build started from the
+command line showed Continue, and Continue started a second builder in the same folder, which
+also took the first one's waiting notes as it started. Who runs something is a fact the system
+can check: the run holds an OS lock for its life (`workspace::build_lock`), released however its
+process ends, and a run takes it before touching anything else in the project (#1970).
+
 **Preflight checked a different transport.** An explicit OpenCode selection bypassed ACP, but
 builder preflight still checked ACP's helper and the native adapter never supplied the MCP server.
 Share transport selection between preflight and execution; reject unsupported native options

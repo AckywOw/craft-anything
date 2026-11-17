@@ -1888,11 +1888,16 @@ Gaps found while using the app for real projects.
       drawn in DM Sans and JetBrains Mono; dropdowns have no name for screen readers, only
       their value; fields and dropdowns have no 3:1 border at rest (WCAG 1.4.11), by choice,
       which wants a second look; a compact field is about a point taller than a button
-- [ ] A build is owned by the process that runs it, whichever that is: the run holds an OS lock
+- [x] A build is owned by the process that runs it, whichever that is: the run holds an OS lock
       in the project for its whole life, and the app tells a build running in another process
       (the CLI, another window) from one that stopped part-way, shows it read-only and doesn't
-      offer to start a second builder beside it (#1970, step 1)
+      offer to start a second builder beside it (#1970, step 1). `inbox/build.lock`, taken
+      before the run touches anything; `project_delete` refuses a project a build holds; the
+      app follows the other build's saved feed every 2 s
       — claimed: tanish2k09, branch feature/r2.9-builds-outlive-the-app
+- [ ] A build in another process shows its saved feed but not its live activity ("Now: …" and
+      the More detail box) or its waiting notes, and the projects list learns that it ended only
+      when the list is read again (#1970, step 1 follow-up)
 - [ ] Pause, Stop, notes and answers for a build running in another process (#1970, step 2)
 - [ ] **decision** The app starts each build as a runner process of its own, which keeps going
       when the app crashes or is replaced and is attached to again when it opens (#1970, step 3)

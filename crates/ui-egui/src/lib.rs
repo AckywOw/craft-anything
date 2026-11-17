@@ -261,7 +261,8 @@ pub enum Done {
         choices: u64,
     },
     /// The projects folder was listed.
-    Projects(Vec<craft_anything_engine::workspace::Workspace>),
+    /// The projects, and which of them a build holds ([`CraftApp::locked`]).
+    Projects(Vec<craft_anything_engine::workspace::Workspace>, std::collections::HashSet<PathBuf>),
     /// A new project's folder was made (see `CraftApp::start_make`).
     Created {
         ws: Box<craft_anything_engine::workspace::Workspace>,
@@ -556,6 +557,9 @@ pub struct CraftApp {
     /// on a worker.
     pub facts: project::Facts,
     facts_reader: project::FactsReader,
+    /// Projects a build holds (their build lock), in this process or another, as last read on a
+    /// worker: with the projects list and the open project's facts (#1970).
+    pub locked: std::collections::HashSet<PathBuf>,
     /// Getting a game engine: downloads, installers opened, a project waiting to start.
     pub engine_flow: engine_ui::Flow,
     /// Getting Ghidra for Deep mode.
@@ -664,6 +668,7 @@ impl CraftApp {
             backend_key_pending: Default::default(),
             facts: Default::default(),
             facts_reader: Default::default(),
+            locked: Default::default(),
             engine_flow: Default::default(),
             ghidra: Default::default(),
             toast_at: Vec::new(),
@@ -1560,13 +1565,14 @@ impl CraftApp {
         };
         match done {
             Done::Nothing => {}
-            Done::Projects(mut p) => {
+            Done::Projects(mut p, locked) => {
                 if let Some(ws) = &self.workspace
                     && !p.iter().any(|w| w.root == ws.root)
                 {
                     p.insert(0, ws.clone());
                 }
                 self.projects = p;
+                self.locked = locked;
                 self.refresh_pins();
             }
             Done::Facts(f) => self.facts_read(job, Some(f)),

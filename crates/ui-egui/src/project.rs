@@ -13,7 +13,7 @@ use craft_anything_ai::rebuild::activity::{Action, ActivityNow, LineKind};
 use craft_anything_ai::rebuild::feed::{self, apply};
 use craft_anything_ai::rebuild::{self, AppKind, KindRegistry, KindWords, Note, RebuildRun, RunEvent, RunOptions, Started, Step, Stopped, TargetKind};
 use craft_anything_engine::inbox::{Answer, Inbox, Request, RequestKind};
-use craft_anything_engine::workspace::{CheckResult, Status, TargetRef, Workspace, suggest_name};
+use craft_anything_engine::workspace::{CheckResult, Status, TargetRef, Workspace, build_lock, suggest_name};
 use egui::{Color32, RichText, Ui, Vec2};
 use std::path::{Path, PathBuf};
 
@@ -22,7 +22,17 @@ use std::path::{Path, PathBuf};
 impl CraftApp {
     pub fn refresh_projects(&mut self) {
         let locations = self.settings.project_locations();
-        self.jobs.spawn("Read projects", false, move |_| Ok(Done::Projects(Workspace::list_in(&locations))));
+        self.jobs.spawn("Read projects", false, move |_| {
+            let projects = Workspace::list_in(&locations);
+            let locked = projects.iter().filter(|w| build_lock::held(&w.root)).map(|w| w.root.clone()).collect();
+            Ok(Done::Projects(projects, locked))
+        });
+    }
+
+    /// A build in another process holds the project (another window, the command line): this app
+    /// shows it but doesn't start one beside it (#1970). As last read on a worker.
+    pub fn building_elsewhere(&self, root: &Path) -> bool {
+        self.locked.contains(root) && !self.runs.is_busy(root)
     }
 
     /// The open project is building or waiting its turn.
@@ -346,6 +356,8 @@ impl CraftApp {
         }
         self.refresh_projects();
         for root in finished {
+            // Its lock went before it said it finished: it isn't a build running elsewhere.
+            self.locked.remove(&root);
             // Every note of a finished run was read or goes next: none can be taken back now.
             self.drafts.retain(|_, d| d.root != root);
             // Notes the builder didn't get to (it finished, or "Send now" stopped it) go next.
@@ -765,13 +777,26 @@ pub struct Facts {
     pub assets: (usize, f64),
     /// The builder's open questions, most important first.
     pub open_questions: Vec<String>,
+    /// A build holds the project (its build lock), in this process or another.
+    pub locked: bool,
+    /// The project's manifest and conversation as they are on disk, read while a build in another
+    /// process holds it (and once more as that build ends), so the screen follows it.
+    pub followed: Option<(Box<Workspace>, Vec<FeedItem>)>,
 }
 
 impl Facts {
-    pub fn read(ws: &Workspace, godot: Option<&Path>) -> Facts {
+    /// `follow`: the app shows a build running in another process, so read what it has saved.
+    pub fn read(ws: &Workspace, godot: Option<&Path>, follow: bool) -> Facts {
         let dir = ws.app_dir();
         let a = ws.assets();
+        let locked = build_lock::held(&ws.root);
+        let followed = (locked || follow).then(|| Workspace::open(&ws.root).ok()).flatten().map(|ws| {
+            let items = feed::load(&ws);
+            (Box::new(ws), items)
+        });
         Facts {
+            locked,
+            followed,
             root: ws.root.clone(),
             site: rebuild::site_dir(&dir).is_some(),
             program: rebuild::launch(&dir, godot).is_some(),
@@ -800,25 +825,47 @@ impl CraftApp {
     /// Start a wanted read when none is under way and the last began a second ago or more.
     pub(crate) fn read_facts(&mut self, ctx: &egui::Context) {
         const EVERY: std::time::Duration = std::time::Duration::from_secs(1);
+        // How often the screen follows a build running in another process.
+        const FOLLOW: std::time::Duration = std::time::Duration::from_secs(2);
+        let follow = self.workspace.as_ref().is_some_and(|w| self.building_elsewhere(&w.root));
         let r = &mut self.facts_reader;
+        r.wanted |= follow;
         let Some(ws) = self.workspace.clone().filter(|_| r.wanted && r.job.is_none()) else { return };
-        if let Some(wait) = r.at.map(|at| EVERY.saturating_sub(at.elapsed())).filter(|w| !w.is_zero()) {
+        let every = if follow { FOLLOW } else { EVERY };
+        if let Some(wait) = r.at.map(|at| every.saturating_sub(at.elapsed())).filter(|w| !w.is_zero()) {
             ctx.request_repaint_after(wait);
             return;
         }
         let godot = self.game_engines.as_ref().and_then(|i| i.best(craft_anything_engines::game::Builder::Godot)).map(|i| i.program.clone());
         r.wanted = false;
         r.at = Some(std::time::Instant::now());
-        r.job = Some(self.jobs.spawn("Read the project", false, move |_| Ok(Done::Facts(Facts::read(&ws, godot.as_deref())))));
+        r.job = Some(self.jobs.spawn("Read the project", false, move |_| Ok(Done::Facts(Facts::read(&ws, godot.as_deref(), follow)))));
     }
 
     pub(crate) fn facts_read(&mut self, job: u64, facts: Option<Facts>) {
         if self.facts_reader.job == Some(job) {
             self.facts_reader.job = None;
         }
-        if let Some(f) = facts.filter(|f| self.workspace.as_ref().is_some_and(|w| w.root == f.root)) {
-            self.facts = f;
+        let Some(mut f) = facts.filter(|f| self.workspace.as_ref().is_some_and(|w| w.root == f.root)) else { return };
+        let was_elsewhere = self.building_elsewhere(&f.root);
+        if f.locked {
+            self.locked.insert(f.root.clone());
+        } else {
+            self.locked.remove(&f.root);
         }
+        // A build in another process saves the project as it goes: show what it saved. A run of
+        // this app's own has the live conversation, so it's left alone.
+        if let Some((saved, items)) = f.followed.take().filter(|_| !self.runs.is_busy(&f.root)) {
+            if let Some(ws) = self.workspace.as_mut() {
+                ws.manifest = saved.manifest;
+            }
+            self.state.feed = items;
+        }
+        // It started or ended there: the projects list shows what it is now.
+        if was_elsewhere != self.building_elsewhere(&f.root) {
+            self.refresh_projects();
+        }
+        self.facts = f;
     }
 
     /// What "Raise the budget" adds: the default budget from Settings (or $5 when that is 0).
@@ -1224,7 +1271,9 @@ fn feed(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace, waiting: &[Note]) {
     if drawn.is_none() {
         ui.colored_label(t.danger, tr("Part of this screen hit a bug and was skipped. Your work is safe."));
     }
-    if can_continue(app, ws) {
+    if app.building_elsewhere(&ws.root) {
+        elsewhere_card(ui);
+    } else if can_continue(app, ws) {
         continue_card(app, ui, ws);
     }
     // The finish line: a big, plain prompt to try what was made.
@@ -1528,13 +1577,14 @@ fn one_line(text: &str) -> String {
 /// A question or approval card. Returns the person's answer when they give one.
 /// The project's last run stopped part-way without pausing (the app or the computer closed while
 /// it worked): its saved status still says it's working, but nothing is.
+/// A build in another process isn't one of these: it's still working (#1970).
 pub fn interrupted(app: &CraftApp, ws: &Workspace) -> bool {
-    !app.runs.is_busy(&ws.root) && matches!(ws.manifest.status, Status::Inspecting | Status::Building | Status::Checking)
+    !app.runs.is_busy(&ws.root) && !app.building_elsewhere(&ws.root) && matches!(ws.manifest.status, Status::Inspecting | Status::Building | Status::Checking)
 }
 
 /// The build can carry on where it stopped: it was paused, or interrupted.
 pub fn can_continue(app: &CraftApp, ws: &Workspace) -> bool {
-    interrupted(app, ws) || (!app.runs.is_busy(&ws.root) && ws.manifest.status == Status::Stopped)
+    interrupted(app, ws) || (!app.runs.is_busy(&ws.root) && !app.building_elsewhere(&ws.root) && ws.manifest.status == Status::Stopped)
 }
 
 /// "Paused" or "This build stopped part-way", with one Continue button: like a question card,
@@ -1567,6 +1617,29 @@ fn continue_card(app: &mut CraftApp, ui: &mut Ui, ws: &Workspace) {
     if go {
         app.continue_build();
     }
+}
+
+/// The project is building in another process (another window, the command line): what it saves
+/// shows above as it goes, and this app doesn't start a build beside it (#1970).
+fn elsewhere_card(ui: &mut Ui) {
+    let t = Tokens::get(ui.ctx());
+    widgets::card(&t).inner_margin(theme::pad::CARD).show(ui, |ui| {
+        ui.set_width(ui.available_width());
+        ui.horizontal(|ui| {
+            icons::show(ui, "activity", theme::icon::LG, t.accent);
+            ui.add(egui::Label::new(RichText::new(tr("Building somewhere else")).font(theme::semibold(theme::BODY))).wrap());
+        });
+        ui.add(
+            egui::Label::new(
+                RichText::new(tr(
+                    "This project is building in another Craft Anything window or from the command line. What it does shows here as it goes. To pause it or add to it, use the window or terminal it runs in.",
+                ))
+                .color(t.text_dim),
+            )
+            .wrap(),
+        );
+    });
+    ui.add_space(chat::MESSAGE_GAP);
 }
 
 /// "It's done": the person is happy with the build as it is, so it stops offering to carry on
@@ -2153,6 +2226,10 @@ impl CraftApp {
         if self.queue_position().is_some() {
             return self.toast(tr("This project is waiting its turn. Send your message once it starts."), true);
         }
+        // Another process builds it: what was typed stays until that build ends (#1970).
+        if self.building_elsewhere(&ws.root) {
+            return self.toast(tr("This project is building somewhere else. Send your message once that build ends."), true);
+        }
         // Attached pictures are still being checked: send this project's text once they finish.
         if self.pending_attach_checks.get(&ws.root).is_some_and(|left| *left > 0) {
             self.send_after_checks.insert(ws.root.clone());
@@ -2222,6 +2299,9 @@ impl CraftApp {
     /// `shown` puts it in the saved one, with `pictures`), or none to try again.
     fn resume(&mut self, message: Option<String>, shown: Option<String>, pictures: Vec<PathBuf>) {
         let Some(ws) = self.workspace.clone() else { return };
+        if self.building_elsewhere(&ws.root) {
+            return self.toast(tr("This project is building somewhere else. Send your message once that build ends."), true);
+        }
         let ws = Workspace::open(&ws.root).unwrap_or(ws);
         let Some(backend) = self.builder_backend(ws.manifest.builder.as_deref()) else { return self.need_builder(false) };
         self.start_run(ws, Some(backend), message, shown, pictures);

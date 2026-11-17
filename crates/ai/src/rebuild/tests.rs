@@ -1311,6 +1311,29 @@ fn needs_an_agent_app() {
     assert!(dir.join("1.json").is_file(), "a run that can't start leaves an earlier run's notes waiting (#1620)");
 }
 
+/// #1970: a build running elsewhere (another window, the command line) holds its project, and a
+/// second one is refused before it touches anything the first is using.
+#[test]
+fn a_project_building_elsewhere_is_left_to_that_build() {
+    use craft_anything_engine::workspace::build_lock::{BuildLock, held};
+    let engine = Arc::new(Engine::new(craft_anything_engine::testing::session()));
+    let d = tempfile::tempdir().unwrap();
+    let hub = AiHub::with_stores(engine, d.path().join("settings.toml"), crate::KeyStore::file_only(d.path().join("keys.toml")));
+    let ws = Workspace::create(d.path(), "x", "y", TargetRef::None).unwrap();
+    let dir = notes::notes_dir(&ws.inbox_dir());
+    let left = notes::Left { text: "make it blue".into(), shown: "make it blue".into(), pictures: Vec::new() };
+    notes::hand_over(&dir, 1, "make it blue", Some(&left)).unwrap();
+    let other = BuildLock::take(&ws).unwrap().expect("free");
+    let err = RebuildRun::start(&hub, ws.clone(), RunOptions::default()).err().unwrap();
+    assert_eq!(err.message, BUILDING_ELSEWHERE, "refused for the other build, before looking for a coding agent");
+    assert!(dir.join("1.json").is_file(), "the other build's waiting note is still its own");
+    assert!(held(&ws.root), "and it still holds the project");
+    drop(other);
+    let err = RebuildRun::start(&hub, ws.clone(), RunOptions::default()).err().unwrap();
+    assert!(err.message.contains("coding agent"), "free again: {}", err.message);
+    assert!(!held(&ws.root), "a run that couldn't start lets the project go");
+}
+
 /// A fork's own kind: recognised from its words, with its own stack and check.
 struct SlidesKind;
 struct OutlineCheck;

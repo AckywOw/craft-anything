@@ -2559,6 +2559,60 @@ fn a_build_that_stopped_part_way_offers_to_continue() {
     assert!(h.query_by_label("This build stopped part-way").is_none(), "no card while it works");
 }
 
+/// #1970: a build running in another process (here, a lock taken by the test, as the CLI's run
+/// would) is followed, not taken for one that stopped part-way, and nothing starts beside it.
+#[test]
+fn a_build_running_elsewhere_is_followed_not_continued() {
+    use craft_anything_ai::rebuild::{RunSet, StandIns};
+    use craft_anything_engine::feed::{FeedItem, UserItem, load, save};
+    use craft_anything_engine::workspace::build_lock::BuildLock;
+    use craft_anything_engine::workspace::{Status, TargetRef, Workspace};
+    let d = tempfile::tempdir().unwrap();
+    let mut ws = Workspace::create(d.path(), "Gamma", "A clock app", TargetRef::None).unwrap();
+    ws.set_status(Status::Building, "Building the first version…").unwrap();
+    let elsewhere = BuildLock::take(&ws).unwrap().expect("free");
+    let runs = StandIns::new();
+    let (dir, starter) = (d.path().to_path_buf(), runs.starter());
+    let mut h = harness(move || {
+        let mut app = demo::app(demo::engine(Mode::Beginner, true));
+        app.settings.projects_dir = Some(dir);
+        app.runs = RunSet::new(1).with_starter(starter);
+        app
+    });
+    h.run_steps(2);
+    h.state_mut().refresh_projects();
+    assert!(wait(&mut h, |app| app.locked.contains(&ws.root)), "the list read which projects are building");
+    h.state_mut().open_workspace(ws.clone());
+    h.run_steps(3);
+    h.get_by_label("Building somewhere else");
+    h.get_by_label("Gamma, Building");
+    assert!(h.query_by_label("This build stopped part-way").is_none(), "it's working, elsewhere");
+    assert!(h.query_by_label("Continue").is_none(), "nothing to carry on");
+    // What that build saves shows here as it goes.
+    let mut items = load(&ws);
+    items.push(FeedItem::User(UserItem::Text("make the hands red".into())));
+    save(&ws.root, &items).unwrap();
+    assert!(
+        wait(&mut h, |app| app.state.feed.iter().any(|i| matches!(i, FeedItem::User(u) if u.text() == "make the hands red"))),
+        "the feed follows the other build"
+    );
+    // A message waits in the box instead of starting a second build.
+    h.state_mut().state.project_input = "and a second hand".into();
+    h.state_mut().send_message();
+    h.run_steps(2);
+    assert_eq!(h.state().state.project_input, "and a second hand", "what was typed is kept");
+    assert!(runs.started().is_empty() && runs.continued().is_empty(), "nothing started beside it");
+    // That build pauses: its lock goes, and this app offers to carry on.
+    Workspace::open(&ws.root).unwrap().set_status(Status::Stopped, "Paused. Send a message to continue.").unwrap();
+    drop(elsewhere);
+    assert!(wait(&mut h, |app| !app.locked.contains(&ws.root)), "the app saw it end");
+    h.run_steps(3);
+    assert!(h.query_by_label("Building somewhere else").is_none());
+    h.get_by_label("Continue").click();
+    h.run_steps(3);
+    assert_eq!(runs.continued(), std::slice::from_ref(&ws.root), "and carries on here now");
+}
+
 #[test]
 fn the_builders_open_questions_show_beside_the_project() {
     let mut h = harness(|| {
