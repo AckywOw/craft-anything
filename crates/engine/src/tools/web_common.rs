@@ -419,10 +419,13 @@ pub fn connect_target(browser: &Browser, target: &Value, max_message: usize, dl:
     Ok(CdpClient::new(conn))
 }
 
-/// Connect to a page and answer any JavaScript dialog it opens by itself, so a call never waits
-/// on one. The dialog events stay in the client's queue for the caller to report.
+/// Connect to a page, enable the Page domain that delivers `Page.javascriptDialogOpening`, and
+/// answer any dialog it opens by itself, so a call never waits on one. The dialog events stay in
+/// the client's queue for the caller to report.
 pub fn connect_target_answering_dialogs(browser: &Browser, target: &Value, max_message: usize, dl: &Deadline) -> Result<CdpClient, ToolError> {
-    connect_target(browser, target, max_message, dl).map(CdpClient::answering_dialogs)
+    let mut client = connect_target(browser, target, max_message, dl).map(CdpClient::answering_dialogs)?;
+    let _ = client.call("Page.enable", json!({}), None, dl);
+    Ok(client)
 }
 
 /// The dialogs a page opened during a run, from its events: kind, first line and how it was answered.

@@ -72,9 +72,7 @@ fn connect(
     let targets = cdp::json_list(&browser.endpoint, dl)?;
     let target = web_common::pick_target(&targets, target_id, Some("page"))?;
     let url = web_common::sanitize_url(target.get("url").and_then(Value::as_str).unwrap_or_default());
-    let mut client = web_common::connect_target_answering_dialogs(&browser, target, PAGE_MAX_MESSAGE, dl)?;
-    // Page.enable is what delivers Page.javascriptDialogOpening, which the client answers.
-    let _ = client.call("Page.enable", json!({}), None, dl);
+    let client = web_common::connect_target_answering_dialogs(&browser, target, PAGE_MAX_MESSAGE, dl)?;
     Ok((browser, client, url))
 }
 

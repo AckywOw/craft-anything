@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 craft-java-class = { workspace = true }
+craft-har = { workspace = true }
 craft-jsonc = { workspace = true }
 craft-sourcemap = { workspace = true }
 craft-pe = { workspace = true }

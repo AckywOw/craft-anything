@@ -1340,6 +1340,7 @@ dependencies = [
  "bzip2-rs",
  "craft-anything-testkit",
  "craft-elf",
+ "craft-har",
  "craft-java-class",
  "craft-jsonc",
  "craft-macho",
@@ -1509,6 +1510,14 @@ dependencies = [
  "thiserror 2.0.21",
 ]
 
+[[package]]
+name = "craft-har"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=6792748feaf14985e2cc97a0e258468621d5c02d#6792748feaf14985e2cc97a0e258468621d5c02d"
+dependencies = [
+ "serde_json",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "craft-java-class"
