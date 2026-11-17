@@ -1916,10 +1916,14 @@ Gaps found while using the app for real projects.
       own kinds don't reach the runner, which uses the built-in ones; an API-backend build still
       waits to work alone although each runner has its own session; a question already waiting
       when the app attaches doesn't mark the project "Needs you"; the Settings row's title and
-      subtitle aren't covered by `i18n-coverage` (no Settings row is)
-- [ ] Not run yet for builds in their own process (#1970): macOS and Linux (`setsid`, `flock`),
-      a project on a network drive, an app started inside a kill-on-close Job Object, and the
-      macOS keychain asking again for the staged CLI
+      subtitle aren't covered by `i18n-coverage` (no Settings row is); a Stop (or SIGTERM) while an
+      API builder waits for its model's first byte takes effect only when that request ends, up
+      to its 5-minute limit (seen on Linux: a runner stopped 284 s after SIGTERM)
+- [ ] Not run yet for builds in their own process (#1970): macOS, a Linux desktop session (run
+      on Ubuntu 26.04 under WSL2 only: the suites, a runner outliving its killed parent and its
+      closed terminal; not a logout, or a desktop that stops an app's whole cgroup), a project on
+      a network drive, an app started inside a kill-on-close Job Object, and the macOS keychain
+      asking again for the staged CLI
 
 ### R2.10 Pinned builds
 Owner: maintainers · Status: in progress
