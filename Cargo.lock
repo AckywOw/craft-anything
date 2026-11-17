@@ -1341,6 +1341,7 @@ dependencies = [
  "craft-anything-testkit",
  "craft-elf",
  "craft-evm",
+ "craft-har",
  "craft-jsonc",
  "craft-macho",
  "craft-mime",
@@ -1515,6 +1516,15 @@ version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=383c52430ed0da0ef3a85ed251013efb8e431487#383c52430ed0da0ef3a85ed251013efb8e431487"
 dependencies = [
  "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-har"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=6792748feaf14985e2cc97a0e258468621d5c02d#6792748feaf14985e2cc97a0e258468621d5c02d"
+dependencies = [
  "serde_json",
  "thiserror 2.0.21",
 ]

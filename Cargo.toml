@@ -11,6 +11,7 @@ repository = "https://github.com/storytold/craft-anything"
 
 [workspace.dependencies]
 craft-evm = { git = "https://github.com/storytold/craft-libs", rev = "383c52430ed0da0ef3a85ed251013efb8e431487" }
+craft-har = { git = "https://github.com/storytold/craft-libs", rev = "6792748feaf14985e2cc97a0e258468621d5c02d" }
 # internal
 craft-anything-evidence = { path = "crates/evidence" }
 craft-anything-formats = { path = "crates/formats" }
