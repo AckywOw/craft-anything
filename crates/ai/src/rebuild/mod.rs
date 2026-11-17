@@ -40,6 +40,7 @@ use std::sync::{Arc, PoisonError};
 use std::time::{Duration, Instant};
 
 pub mod activity;
+pub mod attach;
 mod brief;
 mod check;
 pub mod feed;
@@ -73,8 +74,10 @@ pub use stand_in::StandIns;
 
 pub use craft_anything_engine::workspace::Step;
 
-/// What the UI shows, in order.
-#[derive(Debug, Clone, PartialEq)]
+/// What the UI shows, in order. Serialized one per line in the run's event log
+/// ([`attach`]), so another process can follow the run.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RunEvent {
     /// A stage started (with a plain-words line on what's happening).
     Step { step: Step, text: String },
@@ -263,6 +266,9 @@ pub struct RebuildRun {
     pub root: PathBuf,
     started: Instant,
     activity: Arc<activity::Activity>,
+    /// Set when this follows a run in another process ([`RebuildRun::attach`]): stopping it,
+    /// answering and taking notes back go through the project's files instead.
+    remote: Option<Arc<attach::Remote>>,
 }
 
 /// Take `ws`'s build lock for a run, or say why it can't start: another build holds the project,
@@ -289,6 +295,8 @@ impl RebuildRun {
         // Before anything below touches the project's files (waiting notes, the activity, a
         // transcript): a build running elsewhere keeps them, and this one doesn't start (#1970).
         let lock = take_build_lock(&ws)?;
+        // Other processes follow the run from its event log (#1970); an earlier run's goes now.
+        let events = attach::EventLog::begin(&ws.root);
         let cfg = hub.config();
         let entry = builder_backend(&cfg, opts.backend.as_deref().or_else(|| project_builder(&cfg, &ws)))?;
         // The person's choice of mode is a session setting. A run that waited its turn uses the mode
@@ -348,6 +356,7 @@ impl RebuildRun {
         if let Some(shown) = opts.shown.clone() {
             feed.lock().unwrap_or_else(PoisonError::into_inner).push(feed::FeedItem::User(feed::UserItem::new(shown, opts.shown_pictures.clone())));
         }
+        feed.lock().unwrap_or_else(PoisonError::into_inner).log_events(events, clean_room);
         let ctx = Worker {
             wake: opts.wake.clone(),
             engine: hub.engine.clone(),
@@ -392,8 +401,9 @@ impl RebuildRun {
                 r2.store(false, Ordering::SeqCst);
             })
             .map_err(|e| ToolError::internal(e.to_string()))?;
+        attach::watch(root.clone(), stop.clone(), notes.clone(), feed.clone(), running.clone());
         let activity = feed.lock().unwrap_or_else(PoisonError::into_inner).activity();
-        let run = RebuildRun { rx, stop, inbox, running, preview, notes, clean_room, feed, root, started: Instant::now(), activity };
+        let run = RebuildRun { rx, stop, inbox, running, preview, notes, clean_room, feed, root, started: Instant::now(), activity, remote: None };
         // Waiting again with files of their own: the builder takes them at its next step or after
         // its turn, and a run that ends first hands them to the next one, as with any note.
         for n in left {
@@ -412,7 +422,9 @@ impl RebuildRun {
     /// sent.
     pub fn add_note(&self, text: String, shown: String, pictures: Vec<PathBuf>) -> u64 {
         static NEXT: AtomicU64 = AtomicU64::new(1);
-        let id = NEXT.fetch_add(1, Ordering::Relaxed);
+        let dir = notes::notes_dir(self.inbox.dir());
+        // A follower's ids can't be the run's own (`notes::foreign_id`).
+        let id = if self.remote.is_some() { notes::foreign_id(&dir) } else { NEXT.fetch_add(1, Ordering::Relaxed) };
         let mut file_text = text.clone();
         let mut questions = Vec::new();
         if !text.trim().is_empty() {
@@ -429,7 +441,7 @@ impl RebuildRun {
         // The in-memory note keeps the raw text: if a later run takes it, that run filters the
         // answers by its own mode instead of inheriting this run's.
         let left = notes::Left { text: text.clone(), shown: shown.clone(), pictures: pictures.clone() };
-        if let Err(e) = notes::hand_over(&notes::notes_dir(self.inbox.dir()), id, &file_text, Some(&left)) {
+        if let Err(e) = notes::hand_over_carrying(&dir, id, &file_text, Some(&left), &questions) {
             log::warn!("A note waits for the builder's turn to end: {}", e.message);
         }
         self.notes.lock().unwrap_or_else(PoisonError::into_inner).push(Note { id, text, shown, pictures, questions });
@@ -461,6 +473,9 @@ impl RebuildRun {
     /// Notes the agent never got to (the run ended first), to send as the next message. Their
     /// raw text leaves the Just-ask answers to the next run's own mode and message.
     pub fn take_notes(&self) -> Vec<Note> {
+        if self.remote.is_some() {
+            return attach::take_notes(self);
+        }
         std::mem::take(&mut *self.notes.lock().unwrap_or_else(PoisonError::into_inner))
     }
 
@@ -483,13 +498,28 @@ impl RebuildRun {
 
     /// Answer a card; `shown` is how the answer appears in the project's feed.
     pub fn answer_as(&self, id: &str, answer: &Answer, shown: &str) -> Result<(), ToolError> {
+        if self.remote.is_some() {
+            return attach::answer(self, id, answer, shown);
+        }
         self.inbox.answer(id, answer)?;
         self.feed.lock().unwrap_or_else(PoisonError::into_inner).answered(id, shown);
         Ok(())
     }
 
+    /// Pause it. A run followed from another process is asked through the project's files, and
+    /// its `Finished` arrives as its own Pause's would.
     pub fn stop(&self) {
-        self.stop.cancel();
+        if self.remote.is_some() {
+            attach::ask_to_stop(&self.root);
+        } else {
+            self.stop.cancel();
+        }
+    }
+
+    /// It follows a run in another process ([`RebuildRun::attach`]): dropping it leaves that run
+    /// working.
+    pub fn is_attached(&self) -> bool {
+        self.remote.is_some()
     }
 
     pub fn is_running(&self) -> bool {
@@ -527,12 +557,16 @@ impl RebuildRun {
     }
 
     pub fn preview_url(&self) -> Option<String> {
+        if let Some(remote) = &self.remote {
+            return remote.preview_url();
+        }
         self.preview.lock().unwrap_or_else(PoisonError::into_inner).as_ref().map(StaticServer::url)
     }
 }
 
 impl Drop for RebuildRun {
     fn drop(&mut self) {
+        // A follower's token is its own reading thread's, so this never stops a build elsewhere.
         self.stop.cancel();
     }
 }
@@ -724,6 +758,9 @@ impl Worker {
         }
         // They go in this message, so no hook hands them over again.
         let dir = notes::notes_dir(&ws.inbox_dir());
+        // A note from another process is the run's only once it takes the file, as the hook
+        // does: one taken back there just before isn't sent.
+        notes.retain(|n| !notes::is_foreign(n.id) || notes::take_for_builder(&dir, n.id));
         for n in &notes {
             notes::forget(&dir, n.id);
         }

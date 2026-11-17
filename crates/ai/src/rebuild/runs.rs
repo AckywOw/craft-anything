@@ -210,12 +210,34 @@ impl RunSet {
         }
     }
 
-    /// Empty the queue and stop every run (closing the app).
+    /// Empty the queue and stop every run (closing the app), the ones followed in another process
+    /// too. To leave those working, [`detach_all`](Self::detach_all) first.
     pub fn stop_all(&mut self) {
         self.queue.clear();
         for r in self.runs.values() {
             r.stop();
         }
+    }
+
+    /// Follow the build another process runs on `ws` ([`RebuildRun::attach`]). It counts as working
+    /// here (it takes a place, and [`stop`](Self::stop) pauses it), but this set never started it
+    /// and dropping it never stops it. A project this set is already building or has queued is
+    /// refused. Reads the disk: call it on a worker.
+    pub fn attach(&mut self, ws: &Workspace, wake: Wake) -> Result<(), ToolError> {
+        if self.is_busy(&ws.root) {
+            return Err(
+                ToolError::new(ErrorCode::BadInput, "This project is already building here.").with_remediation("Add to it while it works, or stop it first.")
+            );
+        }
+        let run = RebuildRun::attach(ws, wake)?;
+        self.runs.insert(ws.root.clone(), run);
+        Ok(())
+    }
+
+    /// Forget every run followed from another process, leaving them working (closing the app
+    /// while builds go on elsewhere).
+    pub fn detach_all(&mut self) {
+        self.runs.retain(|_, r| !r.is_attached());
     }
 }
 
