@@ -21,7 +21,15 @@ const PAUSE: Duration = Duration::from_millis(20);
 /// A follower's hold on the project's watchers lock, released when dropped.
 #[derive(Debug)]
 pub struct Watching {
-    _file: File,
+    file: File,
+}
+
+impl Drop for Watching {
+    /// Let go now, not when the file's last copy closes (see `BuildLock`'s drop): on Unix a program
+    /// another thread is starting holds a copy for a moment, and the build would still look watched.
+    fn drop(&mut self) {
+        let _ = self.file.unlock();
+    }
 }
 
 impl Watching {
@@ -37,7 +45,7 @@ impl Watching {
         let file = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(&path)?;
         for i in 0..TRIES {
             match file.try_lock_shared() {
-                Ok(()) => return Ok(Some(Watching { _file: file })),
+                Ok(()) => return Ok(Some(Watching { file })),
                 Err(TryLockError::WouldBlock) if i + 1 < TRIES => std::thread::sleep(PAUSE),
                 Err(TryLockError::WouldBlock) => return Ok(None),
                 Err(TryLockError::Error(e)) => return Err(e),
@@ -59,8 +67,11 @@ pub fn path(root: &Path) -> PathBuf {
 pub fn watched(root: &Path) -> bool {
     let Ok(file) = OpenOptions::new().read(true).open(path(root)) else { return false };
     match file.try_lock() {
-        // Released as `file` goes, at once.
-        Ok(()) => false,
+        // Let go at once, as a follower does (see `Watching`'s drop).
+        Ok(()) => {
+            let _ = file.unlock();
+            false
+        }
         Err(TryLockError::WouldBlock) => true,
         Err(TryLockError::Error(e)) => {
             log::debug!("couldn't tell whether anyone watches the build in {}: {e}", root.display());
