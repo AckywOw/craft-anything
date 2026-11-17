@@ -71,7 +71,7 @@ use locate::*;
 use output::*;
 pub use output::{built_program, launch, site_dir};
 pub use runs::{RunSet, Started, Stopped, keep_queue_moving};
-pub use stand_in::StandIns;
+pub use stand_in::{Elsewhere, StandIns};
 
 pub use craft_anything_engine::workspace::Step;
 
@@ -277,13 +277,18 @@ pub struct RebuildRun {
 fn take_build_lock(ws: &Workspace) -> Result<BuildLock, ToolError> {
     match BuildLock::take(ws) {
         Ok(Some(lock)) => Ok(lock),
-        Ok(None) => Err(ToolError::new(ErrorCode::BadInput, BUILDING_ELSEWHERE).with_remediation("Wait for it to finish, or pause or stop it where it runs.")),
+        Ok(None) => Err(building_elsewhere()),
         Err(e) => Err(ToolError::io(build_lock::path(&ws.root).display(), e)),
     }
 }
 
 /// What a run says when another build holds its project.
 pub const BUILDING_ELSEWHERE: &str = "This project is already building, in another Craft Anything window or from the command line.";
+
+/// The error for a run that can't start because another build holds its project.
+pub(super) fn building_elsewhere() -> ToolError {
+    ToolError::new(ErrorCode::BadInput, BUILDING_ELSEWHERE).with_remediation("Wait for it to finish, or pause or stop it where it runs.")
+}
 
 impl RebuildRun {
     /// Start a run on a worker thread. Fails fast (before any work) when no coding agent is set up,
@@ -510,8 +515,8 @@ impl RebuildRun {
     /// Pause it. A run followed from another process is asked through the project's files, and
     /// its `Finished` arrives as its own Pause's would.
     pub fn stop(&self) {
-        if self.remote.is_some() {
-            attach::ask_to_stop(&self.root);
+        if let Some(remote) = &self.remote {
+            remote.ask_to_stop(&self.root);
         } else {
             self.stop.cancel();
         }

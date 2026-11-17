@@ -17,7 +17,9 @@
 //! Windows refuses to replace a program that's running, so an update or a rebuild of the CLI would
 //! fail for as long as a build runs.
 
-use super::{BUILDING_ELSEWHERE, KindRegistry, RebuildRun, RunEvent, RunOptions, Wake};
+use super::runs::Starter;
+use super::{KindRegistry, RebuildRun, RunEvent, RunOptions, Wake};
+use crate::AiHub;
 use crate::cli_agents::AgentAdapters;
 use craft_anything_engine::workspace::{Workspace, build_lock};
 use craft_anything_evidence::{ErrorCode, ToolError};
@@ -232,6 +234,36 @@ pub fn cli_beside_app() -> Option<PathBuf> {
     craft_anything_platform::which::self_cli_path()
 }
 
+/// A starter for [`super::RunSet::with_starter`] that runs each build in a runner process of its
+/// own ([`start_in_runner`]), started from a copy of `cli` staged under `staging`.
+pub fn starter(cli: PathBuf, staging: PathBuf) -> Starter {
+    Box::new(move |hub, ws, opts| start_in_runner(hub, ws, opts, &cli, &staging))
+}
+
+/// Start a build of `ws` in a runner process and follow it, returning at once (the app calls it
+/// on its UI thread): the runner is started on a thread ([`spawn`]), and the follower shows its
+/// run as [`RebuildRun::attach`] would once it has begun.
+///
+/// Fails at once for what [`RebuildRun::start`] refuses before doing any work and that can be
+/// told without touching the project: another build holds it, or no coding agent is set up. The
+/// run's mode is fixed here as `start` would choose it. What only the runner can find out (its own
+/// settings, a key) ends the follower with the runner's own message
+/// ([`super::attach::starting`]). The runner uses the hub's config folder.
+pub fn start_in_runner(hub: &AiHub, ws: Workspace, opts: RunOptions, cli: &Path, staging: &Path) -> Result<RebuildRun, ToolError> {
+    // The project as it is now, as `RebuildRun::start` reads it.
+    let ws = Workspace::open(&ws.root).unwrap_or(ws);
+    if build_lock::held(&ws.root) {
+        return Err(super::building_elsewhere());
+    }
+    let cfg = hub.config();
+    super::builder_backend(&cfg, opts.backend.as_deref().or_else(|| super::project_builder(&cfg, &ws)))?;
+    let deep = super::run_deep_mode(hub, &opts);
+    let options = RunnerOptions::new(&opts, deep);
+    let config_dir = hub.settings_path().parent().map_or_else(craft_anything_engine::settings::config_dir, Path::to_path_buf);
+    let (cli, staging, runner_ws) = (cli.to_path_buf(), staging.to_path_buf(), ws.clone());
+    super::attach::starting(&ws, &opts, !deep, move || spawn_in(&cli, &staging, &runner_ws, &options, &config_dir))
+}
+
 /// A staged copy of the CLI, and the hold that keeps a cleanup from removing it until dropped.
 #[derive(Debug)]
 pub struct Staged {
@@ -340,7 +372,7 @@ pub fn spawn(cli: &Path, staging: &Path, ws: &Workspace, options: &RunnerOptions
 /// [`spawn`] with the runner's config folder given (tests use a temp folder).
 pub fn spawn_in(cli: &Path, staging: &Path, ws: &Workspace, options: &RunnerOptions, config_dir: &Path) -> Result<Launched, ToolError> {
     if build_lock::held(&ws.root) {
-        return Err(ToolError::new(ErrorCode::BadInput, BUILDING_ELSEWHERE).with_remediation("Wait for it to finish, or pause or stop it where it runs."));
+        return Err(super::building_elsewhere());
     }
     let staged = stage(cli, staging)?;
     let inbox = ws.inbox_dir();
@@ -409,6 +441,10 @@ fn wait_started(launched: &Launched, inbox: &Path, log: &Path, limit: Duration) 
         std::thread::sleep(POLL);
     }
 }
+
+#[cfg(test)]
+#[path = "runner_tests.rs"]
+mod starter_tests;
 
 #[cfg(test)]
 mod tests {

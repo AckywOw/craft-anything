@@ -282,6 +282,12 @@ pub enum Done {
     },
     /// Pictures of the original were copied into the open project (how many were).
     PicturesAdded(Result<usize, String>),
+    /// A build another process runs on the project at `root` was attached to on a worker
+    /// ([`craft_anything_ai::rebuild::RebuildRun::attach`]), or why it couldn't be (#1970).
+    Followed {
+        root: PathBuf,
+        run: Result<Box<craft_anything_ai::rebuild::RebuildRun>, ToolError>,
+    },
     /// The open project's files were read for the Project screen.
     Facts(project::Facts),
     /// A screenshot thumbnail was decoded (`None` when it couldn't be).
@@ -560,6 +566,16 @@ pub struct CraftApp {
     /// Projects a build holds (their build lock), in this process or another, as last read on a
     /// worker: with the projects list and the open project's facts (#1970).
     pub locked: std::collections::HashSet<PathBuf>,
+    /// Projects a build in another process holds that a worker is attaching to now, so none is
+    /// attached twice (#1970).
+    pub attaching: std::collections::HashSet<PathBuf>,
+    /// Projects whose build elsewhere couldn't be attached to (an older or newer version, or it
+    /// ended meanwhile): not tried again until it's seen let go. They're followed from what they
+    /// save instead.
+    pub attach_failed: std::collections::HashSet<PathBuf>,
+    /// What closing the window does to builds running in their own process, once chosen in the
+    /// close dialog or by the setting (`on_exit` reads it).
+    pub close_choice: Option<craft_anything_engine::settings::OnClose>,
     /// Getting a game engine: downloads, installers opened, a project waiting to start.
     pub engine_flow: engine_ui::Flow,
     /// Getting Ghidra for Deep mode.
@@ -669,6 +685,9 @@ impl CraftApp {
             facts: Default::default(),
             facts_reader: Default::default(),
             locked: Default::default(),
+            attaching: Default::default(),
+            attach_failed: Default::default(),
+            close_choice: None,
             engine_flow: Default::default(),
             ghidra: Default::default(),
             toast_at: Vec::new(),
@@ -1573,10 +1592,12 @@ impl CraftApp {
                 }
                 self.projects = p;
                 self.locked = locked;
+                self.follow_elsewhere();
                 self.refresh_pins();
             }
             Done::Facts(f) => self.facts_read(job, Some(f)),
             Done::PicturesAdded(added) => self.pictures_added(added),
+            Done::Followed { root, run } => self.followed(root, run),
             Done::Created { ws, request, backend, pictures, attached } => self.created(*ws, request, backend, pictures, attached),
             Done::Thumb { path, image } => self.thumb_ready(path, image),
             Done::Preview { path, image } => self.preview_ready(path, image),
@@ -1961,6 +1982,9 @@ impl CraftApp {
             }
         }
         self.tick(&ctx);
+        if ctx.input(|i| i.viewport().close_requested()) && self.close_requested() {
+            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
+        }
         self.shortcuts(&ctx);
         #[cfg(target_os = "macos")]
         menu::update(self, &ctx);
@@ -2244,6 +2268,10 @@ impl eframe::App for CraftApp {
         // A running build saves the project's conversation itself (rebuild::feed).
         if let Some(c) = self.conversation.as_mut() {
             c.stop();
+        }
+        // Builds running in their own process go on or pause as chosen; the app's own stop.
+        if self.close_choice() == craft_anything_engine::settings::OnClose::Keep {
+            self.runs.detach_all();
         }
         self.runs.stop_all();
         for j in self.jobs.running() {

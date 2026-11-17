@@ -1895,15 +1895,31 @@ Gaps found while using the app for real projects.
       before the run touches anything; `project_delete` refuses a project a build holds; the
       app follows the other build's saved feed every 2 s
       — claimed: tanish2k09, branch feature/r2.9-builds-outlive-the-app
-- [ ] A build in another process shows its saved feed but not its live activity ("Now: …" and
-      the More detail box) or its waiting notes, and the projects list learns that it ended only
-      when the list is read again (#1970, step 1 follow-up)
-- [ ] Pause, Stop, notes and answers for a build running in another process (#1970, step 2)
-- [ ] **decision** The app starts each build as a runner process of its own, which keeps going
-      when the app crashes or is replaced and is attached to again when it opens (#1970, step 3)
-- [ ] **decision** On closing during a build, the person chooses "Keep building in the
-      background" or "Pause" (saved, Pause by default), with a system notification when a
-      background build finishes or needs an answer (#1970, step 4)
+- [x] Pause, notes and answers for a build running in another process, and its live feed and
+      activity (#1970, step 2): every run writes `inbox/run-events.jsonl` and reads
+      `inbox/control/`; `RebuildRun::attach` gives a follower with a run's own calls, and the app
+      attaches to each locked project it has no run for
+- [x] **decision** (built, waiting for the maintainers' answer on #1970) The app starts each
+      build as a runner process of its own (`craft-anything-cli rebuild-run`, from a staged copy
+      of the CLI, `build.own_process`), which keeps going when the app closes, crashes or is
+      replaced and is attached to again when it opens (#1970, step 3)
+- [x] **decision** (built, waiting for the maintainers' answer on #1970) On closing during a
+      build in its own process, the person chooses "Keep building" or "Pause"
+      (`build.on_close`: ask, keep or pause) (#1970, step 4)
+- [ ] Builds in their own process, left for later (#1970):
+      a build started by a version without the event log is only followed from what it saves
+      (no live activity, no notes), and the projects list learns it ended when the list is read
+      again; a runner nobody is attached to keeps building until it ends or pauses by its own
+      limits (the proposal's "pause at the end of the turn when no app comes back" isn't built);
+      no system notification when a background build finishes or needs an answer; a Pause chosen
+      while a runner is still starting (its first seconds) is lost when the app exits; a fork's
+      own kinds don't reach the runner, which uses the built-in ones; an API-backend build still
+      waits to work alone although each runner has its own session; a question already waiting
+      when the app attaches doesn't mark the project "Needs you"; the Settings row's title and
+      subtitle aren't covered by `i18n-coverage` (no Settings row is)
+- [ ] Not run yet for builds in their own process (#1970): macOS and Linux (`setsid`, `flock`),
+      a project on a network drive, an app started inside a kill-on-close Job Object, and the
+      macOS keychain asking again for the staged CLI
 
 ### R2.10 Pinned builds
 Owner: maintainers · Status: in progress

@@ -219,19 +219,25 @@ impl RunSet {
         }
     }
 
-    /// Follow the build another process runs on `ws` ([`RebuildRun::attach`]). It counts as working
-    /// here (it takes a place, and [`stop`](Self::stop) pauses it), but this set never started it
-    /// and dropping it never stops it. A project this set is already building or has queued is
-    /// refused. Reads the disk: call it on a worker.
-    pub fn attach(&mut self, ws: &Workspace, wake: Wake) -> Result<(), ToolError> {
-        if self.is_busy(&ws.root) {
+    /// Take over a follower made elsewhere (by [`RebuildRun::attach`] on a worker, as it reads the
+    /// disk) for the build another process runs on its project. It counts as working here (it
+    /// takes a place, and [`stop`](Self::stop) pauses it), but this set never started it and
+    /// dropping it never stops it. A project this set is already building or has queued is
+    /// refused (the follower is dropped, which leaves that build alone).
+    pub fn adopt(&mut self, run: RebuildRun) -> Result<(), ToolError> {
+        if self.is_busy(&run.root) {
             return Err(
                 ToolError::new(ErrorCode::BadInput, "This project is already building here.").with_remediation("Add to it while it works, or stop it first.")
             );
         }
-        let run = RebuildRun::attach(ws, wake)?;
-        self.runs.insert(ws.root.clone(), run);
+        self.runs.insert(run.root.clone(), run);
         Ok(())
+    }
+
+    /// Runs followed from another process that are still working: closing the app leaves them
+    /// working or pauses them ([`detach_all`](Self::detach_all), [`stop_all`](Self::stop_all)).
+    pub fn followed(&self) -> usize {
+        self.runs.values().filter(|r| r.is_attached() && r.is_running()).count()
     }
 
     /// Forget every run followed from another process, leaving them working (closing the app

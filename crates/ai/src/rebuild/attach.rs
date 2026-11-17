@@ -62,7 +62,8 @@ pub fn control_dir(root: &Path) -> PathBuf {
     root.join("inbox").join("control")
 }
 
-fn stop_path(root: &Path) -> PathBuf {
+/// Where a follower asks the run to pause.
+pub fn stop_path(root: &Path) -> PathBuf {
     control_dir(root).join("stop")
 }
 
@@ -272,11 +273,38 @@ impl Control {
 pub(super) struct Remote {
     /// Where the run serves its preview (its own address, from [`RunEvent::Preview`]).
     preview: Mutex<Option<String>>,
+    /// The run has begun (it took the lock and cleared control/), so a stop written now reaches
+    /// it. False only while a runner is being started ([`starting`]).
+    begun: AtomicBool,
+    /// Pause was asked for: written again once the run has begun, if it hadn't yet.
+    stop_asked: AtomicBool,
 }
 
 impl Remote {
+    fn following() -> Remote {
+        Remote { begun: AtomicBool::new(true), ..Remote::default() }
+    }
+
     pub(super) fn preview_url(&self) -> Option<String> {
         self.preview.lock().unwrap_or_else(PoisonError::into_inner).clone()
+    }
+
+    /// Ask the run to pause. Before it has begun the request is only remembered: a run clears
+    /// control/ as it begins, and until then the lock may still be another build's.
+    pub(super) fn ask_to_stop(&self, root: &Path) {
+        self.stop_asked.store(true, Ordering::SeqCst);
+        if self.begun.load(Ordering::SeqCst) {
+            write_stop(root);
+        }
+    }
+
+    /// The run has begun: a pause asked for before now is written for it. (Whichever of this and
+    /// [`ask_to_stop`](Self::ask_to_stop) comes second sees the other's flag, so it's never lost.)
+    fn begun(&self, root: &Path) {
+        self.begun.store(true, Ordering::SeqCst);
+        if self.stop_asked.load(Ordering::SeqCst) {
+            write_stop(root);
+        }
     }
 }
 
@@ -373,18 +401,120 @@ fn not_building() -> ToolError {
     ToolError::new(ErrorCode::NotFound, NOT_BUILDING).with_remediation("Start a build, or open the project to see how its last one ended.")
 }
 
-/// A follower's copy of a run: it reads the log and keeps the parts every run has up to date.
-struct Tail {
+/// The log's start, waiting (up to [`HEADER_WAIT`]) for a run that has just taken the lock to
+/// write it. Fails when nothing holds the project and there's no log, or the log can't be read.
+fn wait_for_log(root: &Path) -> Result<LogStart, ToolError> {
+    let deadline = Instant::now() + HEADER_WAIT;
+    loop {
+        if let Some(start) = read_start(root)? {
+            return Ok(start);
+        }
+        if !build_lock::held(root) {
+            return Err(not_building());
+        }
+        if Instant::now() >= deadline {
+            return Err(ToolError::new(ErrorCode::NotSupported, "This project is building, but its build can't be followed from here.")
+                .with_remediation("Watch it where it runs; a build started by an older Craft Anything can't be followed."));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// What a follower ([`RebuildRun`]) shares with the thread that reads its run's log.
+#[derive(Clone)]
+struct Parts {
     root: PathBuf,
-    run: String,
-    reader: Reader,
     feed: Arc<Mutex<feed::FeedLog>>,
     activity: Arc<Activity>,
-    tx: Sender<RunEvent>,
     running: Arc<AtomicBool>,
     remote: Arc<Remote>,
     notes: Arc<Mutex<Vec<Note>>>,
     wake: Wake,
+}
+
+impl Parts {
+    /// A follower's parts, its feed `items` until the run's log says otherwise.
+    fn new(root: &Path, items: Vec<FeedItem>, activity: Arc<Activity>, remote: Remote, wake: Wake) -> Parts {
+        Parts {
+            root: root.to_path_buf(),
+            feed: Arc::new(Mutex::new(feed::FeedLog::mirror(root, items, activity.clone()))),
+            activity,
+            running: Arc::new(AtomicBool::new(true)),
+            remote: Arc::new(remote),
+            notes: Arc::default(),
+            wake,
+        }
+    }
+
+    /// The follower itself. `stop` ends its reading thread (it's cancelled when the follower is
+    /// dropped), never the build.
+    fn run(&self, rx: Receiver<RunEvent>, stop: CancelToken, clean_room: bool, started: Instant) -> RebuildRun {
+        RebuildRun {
+            rx,
+            stop,
+            inbox: Inbox::new(self.root.join("inbox")),
+            running: self.running.clone(),
+            preview: Arc::default(),
+            notes: self.notes.clone(),
+            clean_room,
+            feed: self.feed.clone(),
+            root: self.root.clone(),
+            started,
+            activity: self.activity.clone(),
+            remote: Some(self.remote.clone()),
+        }
+    }
+
+    /// Follow the run whose log began with `start`: everything it has said so far is taken in
+    /// before this returns, so the feed is whole from the start.
+    fn tail(&self, tx: Sender<RunEvent>, start: LogStart) -> Tail {
+        let (reader, header, _, rest) = start;
+        let mut tail = Tail { parts: self.clone(), tx, run: header.run, reader, finished: false, gone_since: None, told_bad_line: false };
+        tail.take(rest);
+        tail.refresh_notes();
+        tail
+    }
+
+    /// Recorded and sent under one lock, as the run does, so `feed_now` sees each event once.
+    fn send(&self, tx: &Sender<RunEvent>, e: RunEvent, at: Duration) {
+        let mut feed = self.feed.lock().unwrap_or_else(PoisonError::into_inner);
+        feed.record_at(&e, at);
+        let _ = tx.send(e);
+    }
+
+    /// The run couldn't be started or followed: say why, once, and stop. `never_ran`: no runner's
+    /// build began, so nothing else will record how the project stands; it's saved here unless
+    /// another build holds the project by now (that build writes its manifest, no one else).
+    fn failed(&self, tx: &Sender<RunEvent>, e: &ToolError, never_ran: bool) {
+        let message = e.for_people();
+        if never_ran
+            && !build_lock::held(&self.root)
+            && let Ok(mut ws) = Workspace::open(&self.root)
+        {
+            let _ = ws.set_status(Status::NeedsYou, message.clone());
+        }
+        self.send(tx, RunEvent::Finished { ok: false, message, paused: false }, self.activity.elapsed());
+        self.running.store(false, Ordering::SeqCst);
+        self.wake.call();
+    }
+}
+
+/// Read `tail`'s log every [`FOLLOW_EVERY`] until its run ends or `quit` is cancelled.
+fn follow(mut tail: Tail, quit: &CancelToken) {
+    while !tail.finished && !quit.is_cancelled() {
+        std::thread::sleep(FOLLOW_EVERY);
+        if quit.is_cancelled() || !tail.step() {
+            return;
+        }
+    }
+}
+
+/// A follower's copy of a run: it reads the log and keeps the parts every run has up to date.
+struct Tail {
+    parts: Parts,
+    tx: Sender<RunEvent>,
+    run: String,
+    reader: Reader,
     finished: bool,
     /// When the lock was first seen free without the run saying it finished.
     gone_since: Option<Instant>,
@@ -402,7 +532,7 @@ impl Tail {
             match serde_json::from_slice::<LineIn>(&line) {
                 Ok(LineIn::Event { at_ms, event }) => {
                     if let RunEvent::Preview(url) = &event {
-                        *self.remote.preview.lock().unwrap_or_else(PoisonError::into_inner) = Some(url.clone());
+                        *self.parts.remote.preview.lock().unwrap_or_else(PoisonError::into_inner) = Some(url.clone());
                     }
                     let done = matches!(event, RunEvent::Finished { .. });
                     self.send(event, Duration::from_millis(at_ms));
@@ -412,13 +542,13 @@ impl Tail {
                     changed = true;
                 }
                 Ok(LineIn::Answered { id, shown }) => {
-                    self.feed.lock().unwrap_or_else(PoisonError::into_inner).answered(&id, &shown);
+                    self.parts.feed.lock().unwrap_or_else(PoisonError::into_inner).answered(&id, &shown);
                     changed = true;
                 }
                 Ok(LineIn::Header(_) | LineIn::Base { .. }) => {}
                 Err(e) => {
                     if !std::mem::replace(&mut self.told_bad_line, true) {
-                        log::warn!("Skipped a line of {} that couldn't be read: {e}", events_path(&self.root).display());
+                        log::warn!("Skipped a line of {} that couldn't be read: {e}", events_path(&self.parts.root).display());
                     }
                 }
             }
@@ -426,29 +556,26 @@ impl Tail {
         changed
     }
 
-    /// Recorded and sent under one lock, as the run does, so `feed_now` sees each event once.
     fn send(&self, e: RunEvent, at: Duration) {
-        let mut feed = self.feed.lock().unwrap_or_else(PoisonError::into_inner);
-        feed.record_at(&e, at);
-        let _ = self.tx.send(e);
+        self.parts.send(&self.tx, e, at);
     }
 
     fn end(&mut self) {
         self.finished = true;
-        self.running.store(false, Ordering::SeqCst);
+        self.parts.running.store(false, Ordering::SeqCst);
     }
 
     /// The run is gone without saying it finished: say so, once.
     fn lost(&mut self) {
         if !self.finished {
-            let at = self.activity.elapsed();
+            let at = self.parts.activity.elapsed();
             self.send(RunEvent::Finished { ok: false, message: ENDED_ELSEWHERE.into(), paused: false }, at);
             self.end();
         }
     }
 
     fn ours(&self) -> bool {
-        log_run(&self.root).as_deref() == Some(self.run.as_str())
+        log_run(&self.parts.root).as_deref() == Some(self.run.as_str())
     }
 
     /// One look at the log, the lock and the notes. False once it's done following.
@@ -456,7 +583,7 @@ impl Tail {
         let mut changed = false;
         if !self.ours() {
             self.lost();
-            self.wake.call();
+            self.parts.wake.call();
             return false;
         }
         match self.reader.lines() {
@@ -465,7 +592,7 @@ impl Tail {
             Ok(_) | Err(Replaced) => self.lost(),
         }
         if !self.finished {
-            if build_lock::held(&self.root) {
+            if build_lock::held(&self.parts.root) {
                 self.gone_since = None;
             } else if self.gone_since.get_or_insert_with(Instant::now).elapsed() >= GONE_GRACE {
                 // Its last words may have come in the meantime.
@@ -479,18 +606,18 @@ impl Tail {
             changed |= self.refresh_notes();
         }
         if changed || self.finished {
-            self.wake.call();
+            self.parts.wake.call();
         }
         !self.finished
     }
 
     /// The notes waiting in the project's folder, whoever added them.
     fn refresh_notes(&self) -> bool {
-        let waiting: Vec<Note> = notes::waiting(&notes::notes_dir(&self.root.join("inbox")))
+        let waiting: Vec<Note> = notes::waiting(&notes::notes_dir(&self.parts.root.join("inbox")))
             .into_iter()
             .map(|w| Note { id: w.id, text: w.left.text, shown: w.left.shown, pictures: w.left.pictures, questions: w.questions })
             .collect();
-        let mut notes = self.notes.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut notes = self.parts.notes.lock().unwrap_or_else(PoisonError::into_inner);
         if *notes == waiting {
             return false;
         }
@@ -513,80 +640,76 @@ impl RebuildRun {
             return Err(not_building());
         }
         // A run takes the lock first and writes its first lines a moment later.
-        let deadline = Instant::now() + HEADER_WAIT;
-        let (reader, header, base, rest) = loop {
-            if let Some(start) = read_start(&root)? {
-                break start;
-            }
-            if !build_lock::held(&root) {
-                return Err(not_building());
-            }
-            if Instant::now() >= deadline {
-                return Err(ToolError::new(ErrorCode::NotSupported, "This project is building, but its build can't be followed from here.")
-                    .with_remediation("Watch it where it runs; a build started by an older Craft Anything can't be followed."));
-            }
-            std::thread::sleep(Duration::from_millis(50));
-        };
+        let start = wait_for_log(&root)?;
+        let header = start.1.clone();
         let began = Instant::now().checked_sub(Duration::from_millis(unix_ms().saturating_sub(header.started_ms))).unwrap_or_else(Instant::now);
         let activity = Arc::new(Activity::began_at(vec![ws.app_dir(), root.clone()], began));
-        let feed = Arc::new(Mutex::new(feed::FeedLog::mirror(&root, base, activity.clone())));
+        let parts = Parts::new(&root, start.2.clone(), activity, Remote::following(), wake);
         let (tx, rx) = std::sync::mpsc::channel();
-        let running = Arc::new(AtomicBool::new(true));
-        let remote = Arc::new(Remote::default());
-        let notes: Arc<Mutex<Vec<Note>>> = Arc::default();
-        let mut tail = Tail {
-            root: root.clone(),
-            run: header.run,
-            reader,
-            feed: feed.clone(),
-            activity: activity.clone(),
-            tx,
-            running: running.clone(),
-            remote: remote.clone(),
-            notes: notes.clone(),
-            wake,
-            finished: false,
-            gone_since: None,
-            told_bad_line: false,
-        };
-        // Everything so far, before this returns, so the feed is whole from the start.
-        tail.take(rest);
-        tail.refresh_notes();
+        let tail = parts.tail(tx, start);
+        // Cancelled when the follower is dropped: it ends the reading thread, not the build.
         let stop = CancelToken::default();
         if !tail.finished {
             let quit = stop.clone();
-            std::thread::Builder::new()
-                .name("rebuild-follow".into())
-                .spawn(move || {
-                    while !quit.is_cancelled() {
-                        std::thread::sleep(FOLLOW_EVERY);
-                        if quit.is_cancelled() || !tail.step() {
-                            return;
-                        }
-                    }
-                })
-                .map_err(|e| ToolError::internal(e.to_string()))?;
+            std::thread::Builder::new().name("rebuild-follow".into()).spawn(move || follow(tail, &quit)).map_err(|e| ToolError::internal(e.to_string()))?;
         }
-        Ok(RebuildRun {
-            rx,
-            // Cancelled when the follower is dropped: it ends the reading thread, not the build.
-            stop,
-            inbox: Inbox::new(ws.inbox_dir()),
-            running,
-            preview: Arc::default(),
-            notes,
-            clean_room: header.clean_room,
-            feed,
-            root,
-            started: began,
-            activity,
-            remote: Some(remote),
-        })
+        Ok(parts.run(rx, stop, header.clean_room, began))
     }
 }
 
-/// A follower asks the run to pause.
-pub(super) fn ask_to_stop(root: &Path) {
+/// A follower for a build that `start` is starting in another process (a runner, [`super::runner`]),
+/// returned at once: `start` runs on a thread of its own and returns once that process's run has
+/// begun (it holds the lock and has written its log's start), or why it couldn't. Until the log
+/// is read the feed is the project's saved one with the person's message (`opts.shown`), so the
+/// screen isn't empty meanwhile; from then on it's the run's.
+///
+/// A failed start ends the follower with one `Finished { ok: false }` carrying the error's message
+/// and remediation, and saves the project as needing the person unless a build holds it. A pause
+/// asked for before the run began reaches it as soon as it has. Dropping the follower leaves the
+/// build running (a start under way still finishes, and a pause asked for is still delivered).
+/// `handle` (what `start` returns, e.g. the runner's process) is kept while the build is followed.
+pub(super) fn starting<H: Send + 'static>(
+    ws: &Workspace,
+    opts: &RunOptions,
+    clean_room: bool,
+    start: impl FnOnce() -> Result<H, ToolError> + Send + 'static,
+) -> Result<RebuildRun, ToolError> {
+    let root = ws.root.clone();
+    let activity = Arc::new(Activity::new(vec![ws.app_dir(), root.clone()]));
+    let mut items = feed::load(ws);
+    if let Some(shown) = &opts.shown {
+        items.push(FeedItem::User(feed::UserItem::new(shown.clone(), opts.shown_pictures.clone())));
+    }
+    let parts = Parts::new(&root, items, activity, Remote::default(), opts.wake.clone());
+    let (tx, rx) = std::sync::mpsc::channel();
+    let stop = CancelToken::default();
+    let (p, quit) = (parts.clone(), stop.clone());
+    std::thread::Builder::new()
+        .name("rebuild-runner".into())
+        .spawn(move || {
+            let handle = match start() {
+                Ok(h) => h,
+                Err(e) => return p.failed(&tx, &e, true),
+            };
+            // Its run has cleared control/: a pause asked for meanwhile can be written now.
+            p.remote.begun(&p.root);
+            match wait_for_log(&p.root) {
+                Err(e) => p.failed(&tx, &e, false),
+                Ok(start) => {
+                    *p.feed.lock().unwrap_or_else(PoisonError::into_inner) = feed::FeedLog::mirror(&p.root, start.2.clone(), p.activity.clone());
+                    let tail = p.tail(tx, start);
+                    p.wake.call();
+                    follow(tail, &quit);
+                }
+            }
+            drop(handle);
+        })
+        .map_err(|e| ToolError::internal(e.to_string()))?;
+    Ok(parts.run(rx, stop, clean_room, Instant::now()))
+}
+
+/// A follower asks the run to pause ([`Remote::ask_to_stop`]).
+fn write_stop(root: &Path) {
     if let Err(e) = craft_anything_platform::fs::write_atomic(&stop_path(root), b"") {
         log::warn!("Couldn't ask the build to pause: {}", e.message);
     }

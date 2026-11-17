@@ -35,6 +35,111 @@ impl CraftApp {
         self.locked.contains(root) && !self.runs.is_busy(root)
     }
 
+    /// Attach to each build another process runs that this app has no run for (#1970), on a
+    /// worker each: one at a time per project, and none for a project whose last try failed until
+    /// its lock is seen let go. Once attached, it's simply building here.
+    pub(crate) fn follow_elsewhere(&mut self) {
+        let locked = &self.locked;
+        self.attach_failed.retain(|root| locked.contains(root));
+        let roots: Vec<PathBuf> = self
+            .locked
+            .iter()
+            .filter(|root| !self.runs.is_busy(root) && !self.attaching.contains(*root) && !self.attach_failed.contains(*root))
+            .cloned()
+            .collect();
+        for root in roots {
+            self.attaching.insert(root.clone());
+            let wake = self.wake();
+            self.jobs.spawn("Follow a build running elsewhere", false, move |_| {
+                let run = Workspace::open(&root).and_then(|ws| RebuildRun::attach(&ws, wake)).map(Box::new);
+                Ok(Done::Followed { root, run })
+            });
+        }
+    }
+
+    /// Run each build in a process of its own (the command line's runner), so it goes on when the
+    /// app closes, crashes or is replaced, and shows again when it opens (#1970). For the real app,
+    /// at startup: only when `build.own_process` is on and the CLI is beside the app. Otherwise,
+    /// and in tests and demos (which don't call this), builds run inside the app as before.
+    pub fn use_runner_builds(&mut self) {
+        if !self.settings.build.own_process || self.runs.any_busy() {
+            return;
+        }
+        let Some(cli) = rebuild::runner::cli_beside_app() else {
+            log::info!("builds run inside the app: craft-anything-cli isn't beside it");
+            return;
+        };
+        let staging = self.engine.session().config_dir().join("runner");
+        self.runs = rebuild::RunSet::new(self.settings.build.parallel).with_starter(rebuild::runner::starter(cli, staging));
+    }
+
+    /// The window was asked to close. True keeps it open: builds running in their own process are
+    /// still working and closing asks what to do with them ([`Modal::CloseDuringBuild`]). With
+    /// `build.on_close` set to keep or pause, or nothing working there, it closes.
+    pub fn close_requested(&mut self) -> bool {
+        use craft_anything_engine::settings::OnClose;
+        if self.close_choice.is_some() || self.runs.followed() == 0 {
+            return false;
+        }
+        match self.settings.build.on_close {
+            OnClose::Ask => {
+                self.state.modal = Some(Modal::CloseDuringBuild { dont_ask: false });
+                true
+            }
+            choice => {
+                self.close_choice = Some(choice);
+                false
+            }
+        }
+    }
+
+    /// What closing does to builds running in their own process: what was chosen, else the
+    /// setting. A window that closed without asking (its close wasn't requested) leaves them
+    /// building: they show again when the app opens.
+    pub fn close_choice(&self) -> craft_anything_engine::settings::OnClose {
+        use craft_anything_engine::settings::OnClose;
+        self.close_choice.unwrap_or(match self.settings.build.on_close {
+            OnClose::Ask => OnClose::Keep,
+            choice => choice,
+        })
+    }
+
+    /// The close dialog's answer, `choice` (keep or pause), saved as `build.on_close` when
+    /// `remember`; then the window closes.
+    pub fn close_with(&mut self, ctx: &egui::Context, choice: craft_anything_engine::settings::OnClose, remember: bool) {
+        if remember {
+            self.settings.build.on_close = choice;
+            self.settings_changed();
+        }
+        self.close_choice = Some(choice);
+        self.state.modal = None;
+        ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+    }
+
+    /// A worker attached to a build elsewhere, or couldn't (see [`Self::follow_elsewhere`]).
+    pub(crate) fn followed(&mut self, root: PathBuf, run: Result<Box<RebuildRun>, craft_anything_engine::evidence::ToolError>) {
+        self.attaching.remove(&root);
+        let run = match run {
+            Ok(run) => *run,
+            Err(e) => {
+                // Followed from what it saves instead (`facts_read`).
+                log::info!("couldn't follow the build of {}: {}", root.display(), e.message);
+                self.attach_failed.insert(root);
+                return;
+            }
+        };
+        // Started or attached here meanwhile: this follower goes, and the build is left alone.
+        if self.runs.adopt(run).is_err() {
+            return;
+        }
+        if self.workspace.as_ref().is_some_and(|w| w.root == root) {
+            if let Some(run) = self.runs.get_mut(&root) {
+                self.state.feed = run.feed_now();
+            }
+            self.refresh_side_panel();
+        }
+    }
+
     /// The open project is building or waiting its turn.
     fn running(&self) -> bool {
         self.workspace.as_ref().is_some_and(|ws| self.runs.is_busy(&ws.root))
@@ -170,10 +275,8 @@ impl CraftApp {
 
     fn run_options(&self, backend: Option<String>, message: Option<String>, shown: Option<String>, pictures: Vec<PathBuf>) -> RunOptions {
         let build = &self.settings.build;
-        // Each event repaints the window, so a build needs no timer to show its progress.
-        let wake = self.jobs.repaint_ctx().cloned().map_or_else(Default::default, |ctx| rebuild::Wake::new(move || ctx.request_repaint()));
         RunOptions {
-            wake,
+            wake: self.wake(),
             backend,
             message,
             shown,
@@ -185,6 +288,12 @@ impl CraftApp {
             clean_room: Some(!self.settings.deep_mode),
             ..RunOptions::default()
         }
+    }
+
+    /// What a run calls after each event: each repaints the window, so a build needs no timer to
+    /// show its progress.
+    fn wake(&self) -> rebuild::Wake {
+        self.jobs.repaint_ctx().cloned().map_or_else(Default::default, |ctx| rebuild::Wake::new(move || ctx.request_repaint()))
     }
 
     /// Start a run, or queue it when as many as Settings allows are already building.
@@ -853,6 +962,7 @@ impl CraftApp {
         } else {
             self.locked.remove(&f.root);
         }
+        self.follow_elsewhere();
         // A build in another process saves the project as it goes: show what it saved. A run of
         // this app's own has the live conversation, so it's left alone.
         if let Some((saved, items)) = f.followed.take().filter(|_| !self.runs.is_busy(&f.root)) {

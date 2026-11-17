@@ -7,63 +7,7 @@ use craft_anything_engine::feed::PlanStatus;
 use craft_anything_engine::inbox::RequestKind;
 
 /// A run as `RebuildRun::start` sets it up, without a worker: the test says what it does.
-struct Owner {
-    lock: Option<BuildLock>,
-    root: PathBuf,
-    feed: Arc<Mutex<feed::FeedLog>>,
-    tx: Sender<RunEvent>,
-    rx: Receiver<RunEvent>,
-    stop: CancelToken,
-    notes: Arc<Mutex<Vec<Note>>>,
-    running: Arc<AtomicBool>,
-    control: Control,
-}
-
-impl Owner {
-    fn start(ws: &Workspace, shown: &str) -> Owner {
-        let lock = BuildLock::take(ws).unwrap().expect("free");
-        let events = EventLog::begin(&ws.root);
-        let feed = Arc::new(Mutex::new(feed::FeedLog::open(ws)));
-        feed.lock().unwrap().push(feed::FeedItem::User(feed::UserItem::new(shown.into(), Vec::new())));
-        feed.lock().unwrap().log_events(events, false);
-        let (tx, rx) = std::sync::mpsc::channel();
-        Owner {
-            lock: Some(lock),
-            root: ws.root.clone(),
-            feed,
-            tx,
-            rx,
-            stop: CancelToken::default(),
-            notes: Arc::default(),
-            running: Arc::new(AtomicBool::new(true)),
-            control: Control::default(),
-        }
-    }
-
-    fn emit(&self, e: RunEvent) {
-        emit_event(&self.feed, &self.tx, &Wake::default(), e);
-    }
-
-    /// One look at what followers left, as the run's control thread does.
-    fn look(&mut self) {
-        self.control.once(&self.root, &self.stop, &self.notes, &self.feed);
-    }
-
-    /// Ends as the run does: the lock first, then the word.
-    fn finish(&mut self, ok: bool, message: &str, paused: bool) {
-        self.lock = None;
-        self.emit(RunEvent::Finished { ok, message: message.into(), paused });
-        self.running.store(false, Ordering::SeqCst);
-    }
-
-    fn events(&self) -> Vec<RunEvent> {
-        self.rx.try_iter().collect()
-    }
-
-    fn items(&self) -> Vec<feed::FeedItem> {
-        self.feed.lock().unwrap().items().to_vec()
-    }
-}
+type Owner = Elsewhere;
 
 fn project() -> (tempfile::TempDir, Workspace) {
     let d = tempfile::tempdir().unwrap();
@@ -113,7 +57,7 @@ fn a_follower_sees_every_event_and_ends_with_the_runs_feed() {
         feed::FeedItem::Agent { text: "Started.".into(), streaming: false },
     ];
     feed::save(&ws.root, &earlier).unwrap();
-    let mut owner = Owner::start(&ws, "Make it blue");
+    let mut owner = Owner::start(&ws, "Make it blue").unwrap();
     let woke = Arc::new(AtomicU64::new(0));
     let w = woke.clone();
     let mut run = RebuildRun::attach(
@@ -160,7 +104,7 @@ fn a_follower_sees_every_event_and_ends_with_the_runs_feed() {
 #[test]
 fn a_follower_that_comes_in_part_way_has_the_whole_feed_so_far() {
     let (_d, ws) = project();
-    let mut owner = Owner::start(&ws, "Make it blue");
+    let mut owner = Owner::start(&ws, "Make it blue").unwrap();
     owner.emit(RunEvent::Step { step: Step::Build, text: "Building".into() });
     owner.emit(checklist("in_progress"));
     owner.emit(RunEvent::Agent(AgentEvent::TextDelta { text: "Half".into() }));
@@ -186,7 +130,7 @@ fn stopping_a_follower_pauses_the_run() {
     let (_d, ws) = project();
     // A stop left from an earlier run's follower isn't this run's.
     craft_anything_platform::fs::write_atomic(&stop_path(&ws.root), b"").unwrap();
-    let owner = Owner::start(&ws, "Make it blue");
+    let owner = Owner::start(&ws, "Make it blue").unwrap();
     assert!(!stop_path(&ws.root).exists(), "cleared when the run began");
     watch(owner.root.clone(), owner.stop.clone(), owner.notes.clone(), owner.feed.clone(), owner.running.clone());
     let mut run = RebuildRun::attach(&ws, Wake::default()).unwrap();
@@ -209,7 +153,7 @@ fn stopping_a_follower_pauses_the_run() {
 #[test]
 fn a_note_from_a_follower_waits_for_the_runs_builder_and_can_be_taken_back() {
     let (_d, ws) = project();
-    let mut owner = Owner::start(&ws, "Make it blue");
+    let mut owner = Owner::start(&ws, "Make it blue").unwrap();
     let run = RebuildRun::attach(&ws, Wake::default()).unwrap();
     let dir = notes::notes_dir(&ws.inbox_dir());
 
@@ -249,7 +193,7 @@ fn a_note_from_a_follower_waits_for_the_runs_builder_and_can_be_taken_back() {
 #[test]
 fn an_answer_given_while_following_is_recorded_by_the_run() {
     let (_d, ws) = project();
-    let mut owner = Owner::start(&ws, "Make it blue");
+    let mut owner = Owner::start(&ws, "Make it blue").unwrap();
     let inbox = Inbox::new(ws.inbox_dir());
     let id = inbox.post(RequestKind::Question, "Blue or teal?", "", vec![], true, None).unwrap();
     owner.emit(RunEvent::Ask(inbox.pending().into_iter().find(|r| r.id == id).unwrap()));
@@ -365,18 +309,40 @@ fn what_looks_like_a_secret_is_not_logged() {
 #[test]
 fn a_set_follows_a_build_elsewhere_and_can_leave_it_working() {
     let (_d, ws) = project();
-    let owner = Owner::start(&ws, "Make it blue");
+    let owner = Owner::start(&ws, "Make it blue").unwrap();
     let mut set = RunSet::new(1);
-    set.attach(&ws, Wake::default()).unwrap();
-    assert!(set.is_running(&ws.root) && set.is_busy(&ws.root) && set.active() == 1);
+    let follow = || RebuildRun::attach(&ws, Wake::default()).unwrap();
+    set.adopt(follow()).unwrap();
+    assert!(set.is_running(&ws.root) && set.is_busy(&ws.root) && set.active() == 1 && set.followed() == 1);
     assert!(set.get(&ws.root).is_some_and(RebuildRun::is_attached));
-    assert!(set.attach(&ws, Wake::default()).is_err(), "followed once");
+    assert!(set.adopt(follow()).is_err(), "followed once");
+    std::thread::sleep(CONTROL_EVERY * 2);
+    assert!(set.is_running(&ws.root) && !stop_path(&ws.root).exists(), "the refused follower's drop left it working");
     set.detach_all();
-    assert!(set.get(&ws.root).is_none() && !set.any_busy());
+    assert!(set.get(&ws.root).is_none() && !set.any_busy() && set.followed() == 0);
     assert!(!stop_path(&ws.root).exists() && !owner.stop.is_cancelled(), "left working");
 
     // stop_all pauses followed runs too.
-    set.attach(&ws, Wake::default()).unwrap();
+    set.adopt(follow()).unwrap();
     set.stop_all();
     assert!(stop_path(&ws.root).exists());
+}
+
+/// A follower made on a worker isn't taken over for a project this set has queued.
+#[test]
+fn a_set_does_not_adopt_a_project_it_has_queued() {
+    let d = tempfile::tempdir().unwrap();
+    let a = Workspace::create(d.path(), "A", "A notes app", TargetRef::None).unwrap();
+    let b = Workspace::create(d.path(), "B", "A notes app", TargetRef::None).unwrap();
+    let mut s = craft_anything_engine::testing::session();
+    s.settings.ai = toml::from_str("[[backends]]\nname = \"Agent\"\nkind = \"agent_cli\"\nmodel = \"claude-code\"\n").unwrap();
+    let hub = AiHub::new(Arc::new(Engine::new(s)));
+    let fake = StandIns::new();
+    let mut set = RunSet::new(1).with_starter(fake.starter());
+    set.start(&hub, a.clone(), RunOptions::default()).unwrap();
+    assert_eq!(set.start(&hub, b.clone(), RunOptions::default()).unwrap(), Started::Queued { position: 1 });
+    let _owner = Owner::start(&b, "Make it blue").unwrap();
+    assert!(set.adopt(RebuildRun::attach(&b, Wake::default()).unwrap()).is_err(), "it's queued here");
+    assert_eq!(set.position(&b.root), Some(1));
+    set.stop_all();
 }
