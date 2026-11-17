@@ -60,6 +60,7 @@ mod study;
 #[cfg(test)]
 mod tests;
 pub mod tools;
+pub mod unwatched;
 
 use brief::*;
 pub use kinds::{
@@ -72,6 +73,7 @@ use output::*;
 pub use output::{built_program, launch, site_dir};
 pub use runs::{RunSet, Started, Stopped, keep_queue_moving};
 pub use stand_in::{Elsewhere, StandIns};
+pub use unwatched::{Notify, WhenUnwatched};
 
 pub use craft_anything_engine::workspace::Step;
 
@@ -157,6 +159,13 @@ pub struct RunOptions {
     /// A free session is read first; this is the fallback while it is held; the saved settings
     /// are the last fallback.
     pub clean_room: Option<bool>,
+    /// Pause before the next builder turn once nobody has watched for a while, and notify the
+    /// person while nobody watches ([`unwatched`]). Only a runner's run sets it (`rebuild-run`);
+    /// `None` (a run in the app, or the terminal's `rebuild`) never pauses for it.
+    pub when_unwatched: Option<WhenUnwatched>,
+    /// Names the start of a runner ([`runner::spawn`]): a Pause asked before its run began is
+    /// written for this token ([`attach::RUN_STOP_FILE`]), and the run pauses as it begins.
+    pub start_token: Option<String>,
 }
 
 impl Default for RunOptions {
@@ -174,6 +183,8 @@ impl Default for RunOptions {
             adapters: Default::default(),
             wake: Wake::default(),
             clean_room: None,
+            when_unwatched: None,
+            start_token: None,
         }
     }
 }
@@ -270,6 +281,9 @@ pub struct RebuildRun {
     /// Set when this follows a run in another process ([`RebuildRun::attach`]): stopping it,
     /// answering and taking notes back go through the project's files instead.
     remote: Option<Arc<attach::Remote>>,
+    /// A follower's hold on the project's watchers lock, so the run knows someone watches
+    /// ([`unwatched`]). Released as the follower goes.
+    _watching: Option<craft_anything_engine::workspace::watchers::Watching>,
 }
 
 /// Take `ws`'s build lock for a run, or say why it can't start: another build holds the project,
@@ -303,6 +317,8 @@ impl RebuildRun {
         let lock = take_build_lock(&ws)?;
         // Other processes follow the run from its event log (#1970); an earlier run's goes now.
         let events = attach::EventLog::begin(&ws.root);
+        // A Pause asked before this runner's run began, by a window that may have closed since.
+        let stop_before = attach::stopped_before_start(&ws.root, opts.start_token.as_deref());
         let cfg = hub.config();
         let entry = builder_backend(&cfg, opts.backend.as_deref().or_else(|| project_builder(&cfg, &ws)))?;
         // The person's choice of mode is a session setting. A run that waited its turn uses the mode
@@ -345,6 +361,10 @@ impl RebuildRun {
         };
         let (tx, rx) = std::sync::mpsc::channel();
         let stop = CancelToken::default();
+        if stop_before {
+            stop.cancel();
+        }
+        let watch = opts.when_unwatched.clone().map(|rule| unwatched::Watch::new(&ws, rule));
         let running = Arc::new(AtomicBool::new(true));
         let preview: Arc<Mutex<Option<StaticServer>>> = Arc::default();
         let notes: Arc<Mutex<Vec<Note>>> = Arc::default();
@@ -380,7 +400,10 @@ impl RebuildRun {
             reset_progress_after_notes: false,
             keys: hub.keys.clone(),
             kept_checks: Mutex::default(),
+            watch: watch.clone(),
+            paused_for_nobody: false,
         };
+        let control = attach::Control::new(opts.start_token.clone(), watch);
         let r2 = running.clone();
         let key_store = hub.keys.clone();
         std::thread::Builder::new()
@@ -395,8 +418,11 @@ impl RebuildRun {
                     ctx.load_asset_keys(&key_store);
                     ctx.run(&mut ws, entry, api, extractor, kept_without_api, &opts)
                 }));
-                let (ok, message, paused) = run_outcome(result, &mut ws);
+                let (ok, message, paused) = run_outcome(result, &mut ws, ctx.paused_for_nobody);
                 ctx.record_usage(None);
+                if let Some(w) = &ctx.watch {
+                    w.finished(ok, &message, paused, ctx.paused_for_nobody);
+                }
                 // The CLI can exit as soon as it sees completion: release the helper while its
                 // supervisor threads are still available to stop it.
                 drop(awake);
@@ -407,9 +433,10 @@ impl RebuildRun {
                 r2.store(false, Ordering::SeqCst);
             })
             .map_err(|e| ToolError::internal(e.to_string()))?;
-        attach::watch(root.clone(), stop.clone(), notes.clone(), feed.clone(), running.clone());
+        attach::watch(root.clone(), stop.clone(), notes.clone(), feed.clone(), running.clone(), control);
         let activity = feed.lock().unwrap_or_else(PoisonError::into_inner).activity();
-        let run = RebuildRun { rx, stop, inbox, running, preview, notes, clean_room, feed, root, started: Instant::now(), activity, remote: None };
+        let run =
+            RebuildRun { rx, stop, inbox, running, preview, notes, clean_room, feed, root, started: Instant::now(), activity, remote: None, _watching: None };
         // Waiting again with files of their own: the builder takes them at its next step or after
         // its turn, and a run that ends first hands them to the next one, as with any note.
         for n in left {
@@ -528,6 +555,22 @@ impl RebuildRun {
         self.remote.is_some()
     }
 
+    /// The person chose to keep a run in another process building after this window closes: it
+    /// goes on with nobody watching instead of pausing at its next turn ([`unwatched`]). It writes
+    /// a small file; a run in this process ignores it. The next window to follow the run takes it
+    /// back.
+    pub fn keep_building(&self) {
+        if self.remote.is_some() {
+            attach::keep_building(&self.root);
+        }
+    }
+
+    /// A question or approval in its feed waits for the person. Cheap: reads only memory, and
+    /// leaves the events not yet polled where they are.
+    pub fn waits_for_answer(&self) -> bool {
+        self.feed.lock().unwrap_or_else(PoisonError::into_inner).items().iter().any(|i| matches!(i, feed::FeedItem::Ask { answer: None, .. }))
+    }
+
     pub fn is_running(&self) -> bool {
         self.running.load(Ordering::SeqCst)
     }
@@ -618,6 +661,10 @@ struct Worker {
     keys: crate::keys::KeyStore,
     /// The last check round in which everything worked, kept while nothing it looks at changes.
     kept_checks: Mutex<kept_check::KeptChecks>,
+    /// Who watches a runner's run ([`RunOptions::when_unwatched`]); `None` for any other run.
+    watch: Option<Arc<unwatched::Watch>>,
+    /// It paused because nobody watched ([`Worker::pause_if_unwatched`]).
+    paused_for_nobody: bool,
 }
 
 /// The project a run records its usage in, and when it last did.
@@ -1025,8 +1072,14 @@ impl Worker {
         let mut reminded = false;
         // The builder finished and only the check didn't: the build is there to check.
         let mut only_check = carrying_on && !first && opts.message.is_none() && ws.manifest.awaiting_check;
+        let mut first_turn = true;
         loop {
             if !std::mem::take(&mut only_check) {
+                // Every builder turn after the run's first follows a turn or a check that has
+                // finished: the place to stop when nobody watches, before another turn is paid for.
+                if !std::mem::replace(&mut first_turn, false) {
+                    self.pause_if_unwatched()?;
+                }
                 progress = BuildProgress::load(&ws.root)?;
                 if let Some(fingerprint) = self.progress_fingerprint(ws, &mut progress, &mut progress_available, &mut fingerprints)? {
                     progress.before_turn(fingerprint);
@@ -1506,9 +1559,22 @@ impl Worker {
     fn relay_inbox(&mut self) {
         for r in self.inbox.pending() {
             if self.seen.insert(r.id.clone()) {
+                if let Some(w) = &self.watch {
+                    w.asking(&r);
+                }
                 self.emit(RunEvent::Ask(r));
             }
         }
+    }
+
+    /// A runner's run that nobody has watched for its limit, without the person choosing to keep
+    /// building, stops here as a Pause does ([`unwatched`]).
+    fn pause_if_unwatched(&mut self) -> Result<(), ToolError> {
+        if self.watch.as_ref().is_some_and(|w| w.should_pause()) {
+            self.paused_for_nobody = true;
+            return Err(ToolError::cancelled());
+        }
+        Ok(())
     }
 }
 
@@ -1562,10 +1628,15 @@ fn newly_said(inbox: &Path, said: &mut HashMap<String, String>) -> Vec<String> {
 
 /// What the run says, and the status it leaves on the project, when it ends: paused, failed, or
 /// a caught bug. A caught bug must not leave the saved status as it last was ("Checking" while
-/// nothing runs), or the project looks stuck rather than stopped.
-fn run_outcome(result: Result<Result<String, ToolError>, Box<dyn std::any::Any + Send>>, ws: &mut Workspace) -> (bool, String, bool) {
+/// nothing runs), or the project looks stuck rather than stopped. `for_nobody`: it paused because
+/// nobody watched ([`unwatched`]), which it says.
+fn run_outcome(result: Result<Result<String, ToolError>, Box<dyn std::any::Any + Send>>, ws: &mut Workspace, for_nobody: bool) -> (bool, String, bool) {
     match result {
         Ok(Ok(m)) => (true, m, false),
+        Ok(Err(e)) if e.code == ErrorCode::Cancelled && for_nobody => {
+            let _ = ws.set_status(Status::Stopped, unwatched::UNWATCHED_PAUSE);
+            (false, unwatched::UNWATCHED_PAUSE.to_string(), true)
+        }
         Ok(Err(e)) if e.code == ErrorCode::Cancelled => {
             let _ = ws.set_status(Status::Stopped, "Paused. Send a message to continue.");
             (false, "Paused.".to_string(), true)

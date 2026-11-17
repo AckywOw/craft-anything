@@ -68,6 +68,7 @@ impl StandIns {
                 root: ws.root.clone(),
                 started: std::time::Instant::now(),
                 remote: None,
+                _watching: None,
             })
         })
     }

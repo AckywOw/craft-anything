@@ -1,7 +1,10 @@
 //! `rebuild-run` (hidden): run one project's build in this process, with no terminal, until it
 //! ends. The app starts it ([`craft_anything_ai::rebuild::runner::spawn`]) so a build outlives the
 //! app (#1970). It never reads stdin or answers anything: questions and approvals wait in the
-//! project's inbox for whoever is attached.
+//! project's inbox for whoever is attached. Once nobody has watched for a minute (the app closed
+//! without "Keep building", or crashed), it pauses before its next builder turn, and while nobody
+//! watches it shows a system notification when it ends or asks something
+//! ([`craft_anything_ai::rebuild::unwatched`]).
 //!
 //! Exit codes: 0 the build finished or was paused, 1 it stopped or failed, 3 it couldn't start (the
 //! reason is in `inbox/run-error.json`).
@@ -9,7 +12,7 @@
 use crate::{INTERRUPTED, make_engine};
 use craft_anything_ai::AiHub;
 use craft_anything_ai::rebuild::runner::{self, RunnerOptions};
-use craft_anything_ai::rebuild::{KindRegistry, RebuildRun, Wake};
+use craft_anything_ai::rebuild::{KindRegistry, RebuildRun, Wake, WhenUnwatched};
 use craft_anything_engine::workspace::Workspace;
 use craft_anything_evidence::ToolError;
 use std::path::Path;
@@ -49,5 +52,9 @@ fn start(root: &Path, options: &Path) -> Result<RebuildRun, ToolError> {
         log::warn!("couldn't save the OpenCode Go session id: {e}");
     }
     let ws = Workspace::open(root)?;
-    RebuildRun::start(&hub, ws, opts.into_run_options(KindRegistry::built_in(), Default::default(), Wake::default()))
+    let mut run_opts = opts.into_run_options(KindRegistry::built_in(), Default::default(), Wake::default());
+    // With nobody watching (the app closed without "Keep building"), it pauses at its next turn
+    // and says so with a system notification.
+    run_opts.when_unwatched = Some(WhenUnwatched::runner());
+    RebuildRun::start(&hub, ws, run_opts)
 }

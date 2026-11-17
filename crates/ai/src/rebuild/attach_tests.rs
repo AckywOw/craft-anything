@@ -132,7 +132,7 @@ fn stopping_a_follower_pauses_the_run() {
     craft_anything_platform::fs::write_atomic(&stop_path(&ws.root), b"").unwrap();
     let owner = Owner::start(&ws, "Make it blue").unwrap();
     assert!(!stop_path(&ws.root).exists(), "cleared when the run began");
-    watch(owner.root.clone(), owner.stop.clone(), owner.notes.clone(), owner.feed.clone(), owner.running.clone());
+    watch(owner.root.clone(), owner.stop.clone(), owner.notes.clone(), owner.feed.clone(), owner.running.clone(), Control::default());
     let mut run = RebuildRun::attach(&ws, Wake::default()).unwrap();
 
     // Dropping a follower leaves the build alone.

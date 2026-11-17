@@ -11,7 +11,14 @@
 //! run-started.json   the runner's process id once its run started (RunStarted, versioned); gone when it ends
 //! run-output.log     what the runner printed, replaced at each start
 //! build.lock         held by the run for its whole life (build_lock)
+//! run-stop.json      a Pause asked before the run began, for its start's token (attach; the run takes it)
+//! watchers.lock      held (shared) by every window following the run (watchers)
+//! run-keep           the person chose "Keep building" on closing (unwatched; a window following removes it)
 //! ```
+//!
+//! A runner's run pauses before its next builder turn once nobody has watched for a minute
+//! without the person choosing to keep it building, and while nobody watches it says with a
+//! system notification when it ends or needs the person ([`super::unwatched`]).
 //!
 //! The runner is started from a staged copy of the CLI ([`stage`]), never from the installed file:
 //! Windows refuses to replace a program that's running, so an update or a rebuild of the CLI would
@@ -65,6 +72,10 @@ pub struct RunnerOptions {
     /// The run's mode: Deep (true) or Clean room. Always explicit: the runner's own session may
     /// read different settings by the time it starts.
     pub deep: bool,
+    /// Names this start ([`RunOptions::start_token`]), so a Pause asked before the run began
+    /// reaches this runner and no later one.
+    #[serde(default)]
+    pub start_token: Option<String>,
 }
 
 impl RunnerOptions {
@@ -81,10 +92,12 @@ impl RunnerOptions {
             good_enough: opts.good_enough,
             beginner: opts.beginner,
             deep,
+            start_token: opts.start_token.clone(),
         }
     }
 
-    /// The options for [`RebuildRun::start`], with the code a run needs and its mode fixed.
+    /// The options for [`RebuildRun::start`], with the code a run needs and its mode fixed. What
+    /// it does with nobody watching ([`RunOptions::when_unwatched`]) is the runner's to set.
     pub fn into_run_options(self, kinds: KindRegistry, adapters: AgentAdapters, wake: Wake) -> RunOptions {
         RunOptions {
             backend: self.backend,
@@ -99,6 +112,8 @@ impl RunnerOptions {
             adapters,
             wake,
             clean_room: Some(!self.deep),
+            when_unwatched: None,
+            start_token: self.start_token,
         }
     }
 
@@ -240,6 +255,13 @@ pub fn starter(cli: PathBuf, staging: PathBuf) -> Starter {
     Box::new(move |hub, ws, opts| start_in_runner(hub, ws, opts, &cli, &staging))
 }
 
+/// A [`super::RunSet`] of at most `limit` builds at once, each in a runner process of its own
+/// ([`starter`]). Each runner has its own session, so a build on an API backend doesn't have to
+/// work alone as it does in the app's session.
+pub fn run_set(limit: usize, cli: PathBuf, staging: PathBuf) -> super::RunSet {
+    super::RunSet::new(limit).with_starter(starter(cli, staging)).with_own_sessions()
+}
+
 /// Start a build of `ws` in a runner process and follow it, returning at once (the app calls it
 /// on its UI thread): the runner is started on a thread ([`spawn`]), and the follower shows its
 /// run as [`RebuildRun::attach`] would once it has begun.
@@ -249,7 +271,9 @@ pub fn starter(cli: PathBuf, staging: PathBuf) -> Starter {
 /// run's mode is fixed here as `start` would choose it. What only the runner can find out (its own
 /// settings, a key) ends the follower with the runner's own message
 /// ([`super::attach::starting`]). The runner uses the hub's config folder.
-pub fn start_in_runner(hub: &AiHub, ws: Workspace, opts: RunOptions, cli: &Path, staging: &Path) -> Result<RebuildRun, ToolError> {
+pub fn start_in_runner(hub: &AiHub, ws: Workspace, mut opts: RunOptions, cli: &Path, staging: &Path) -> Result<RebuildRun, ToolError> {
+    // Names this start, so a Pause asked before its run begins reaches it alone.
+    opts.start_token = Some(new_token());
     // The project as it is now, as `RebuildRun::start` reads it.
     let ws = Workspace::open(&ws.root).unwrap_or(ws);
     if build_lock::held(&ws.root) {
@@ -262,6 +286,17 @@ pub fn start_in_runner(hub: &AiHub, ws: Workspace, opts: RunOptions, cli: &Path,
     let config_dir = hub.settings_path().parent().map_or_else(craft_anything_engine::settings::config_dir, Path::to_path_buf);
     let (cli, staging, runner_ws) = (cli.to_path_buf(), staging.to_path_buf(), ws.clone());
     super::attach::starting(&ws, &opts, !deep, move || spawn_in(&cli, &staging, &runner_ws, &options, &config_dir))
+}
+
+/// A token no other start has: this process, the time, and a random number.
+fn new_token() -> String {
+    use std::hash::{BuildHasher, Hasher};
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let now = std::time::SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_nanos());
+    let mut h = std::collections::hash_map::RandomState::new().build_hasher();
+    h.write_u128(now);
+    h.write_u64(NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed));
+    format!("{}-{now:x}-{:016x}", std::process::id(), h.finish())
 }
 
 /// A staged copy of the CLI, and the hold that keeps a cleanup from removing it until dropped.
@@ -460,6 +495,7 @@ mod tests {
             max_rounds: 3,
             good_enough: 85.5,
             beginner: false,
+            start_token: Some("this-start".into()),
             ..RunOptions::default()
         };
         RunnerOptions::new(&opts, true)
@@ -477,6 +513,8 @@ mod tests {
         assert!(run.continuing && !run.beginner);
         assert_eq!((run.max_rounds, run.good_enough), (3, 85.5));
         assert_eq!(run.clean_room, Some(false), "Deep mode is carried as the run's mode");
+        assert_eq!(run.start_token.as_deref(), Some("this-start"), "and the start it was asked for");
+        assert!(run.when_unwatched.is_none(), "the runner sets what it does with nobody watching");
         let clean = RunnerOptions::new(&RunOptions::default(), false).into_run_options(KindRegistry::built_in(), AgentAdapters::default(), Wake::default());
         assert_eq!(clean.clean_room, Some(true));
     }

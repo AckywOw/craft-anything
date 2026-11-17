@@ -30,6 +30,7 @@ use std::sync::PoisonError;
 
 pub mod build_lock;
 pub mod progress;
+pub mod watchers;
 
 pub const MANIFEST: &str = "craft.json";
 

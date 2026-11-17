@@ -209,6 +209,72 @@ fn a_pause_asked_before_the_runner_began_still_reaches_it() {
     drop(server);
 }
 
+/// The app closes with "Pause" while its runner is still starting: the pause is written at once
+/// for that start, so the runner pauses as it begins although no window is left to tell it.
+#[test]
+fn a_pause_asked_while_the_runner_starts_holds_after_the_app_is_gone() {
+    let server = Silent::start();
+    let mut b = bench(Some(server.port));
+    let opts = RunOptions { start_token: Some("this-start".into()), ..b.options("Make it blue") };
+    let options = RunnerOptions::new(&opts, false);
+    let (ws, staging, config) = (b.ws.clone(), b.staging.clone(), b.dir.path().join("config"));
+    // A follower as `start_in_runner` makes, whose start stays "under way" until the runner has
+    // ended: the stop it remembers in memory can't be delivered before then, as when the app's
+    // process is gone.
+    let (pid_tx, pid_rx) = std::sync::mpsc::channel();
+    let run = attach::starting(&b.ws, &opts, true, move || {
+        let launched = spawn_in(&cli(), &staging, &ws, &options, &config)?;
+        let _ = pid_tx.send(launched.pid());
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while build_lock::held(&ws.root) && Instant::now() < deadline {
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        Ok(launched)
+    })
+    .unwrap();
+    run.stop();
+    assert!(attach::run_stop_path(&b.ws.root).exists(), "written at once, for this start");
+    // The app exited.
+    drop(run);
+    // Its build began (or the start failed, which the wait below reports).
+    b.runner = pid_rx.recv_timeout(Duration::from_secs(30)).ok();
+    assert!(b.runner.is_some(), "the runner started");
+    wait(Duration::from_secs(60), "the runner pauses and lets the project go", || {
+        !build_lock::held(&b.ws.root) && std::fs::read_to_string(attach::events_path(&b.ws.root)).is_ok_and(|l| l.contains("\"finished\""))
+    });
+    let saved = Workspace::open(&b.ws.root).unwrap().manifest;
+    assert_eq!(saved.status, Status::Stopped, "saved as paused: {}", saved.note);
+    assert!(!attach::run_stop_path(&b.ws.root).exists(), "the runner took it");
+    let log = std::fs::read_to_string(attach::events_path(&b.ws.root)).unwrap();
+    assert!(log.contains("\"paused\":true"), "it ended as a Pause: {log}");
+    drop(server);
+}
+
+/// A pause left for an earlier start (its runner never began) isn't this one's.
+#[test]
+fn a_stale_pause_from_an_earlier_start_doesnt_pause_a_new_runner() {
+    let server = Silent::start();
+    let mut b = bench(Some(server.port));
+    std::fs::create_dir_all(b.ws.inbox_dir()).unwrap();
+    std::fs::write(attach::run_stop_path(&b.ws.root), r#"{"version":1,"token":"an-earlier-start"}"#).unwrap();
+    let mut run = start_in_runner(&b.hub, b.ws.clone(), b.options("Make it blue"), &cli(), &b.staging).unwrap();
+    b.runner_began();
+    let mut seen = Vec::new();
+    wait(Duration::from_secs(30), "the runner's first step", || {
+        seen.extend(run.poll());
+        seen.iter().any(|e| matches!(e, RunEvent::Step { .. }))
+    });
+    assert!(!attach::run_stop_path(&b.ws.root).exists(), "the stale one went as the run began");
+    std::thread::sleep(Duration::from_secs(1));
+    seen.extend(run.poll());
+    assert!(run.is_running() && !seen.iter().any(|e| matches!(e, RunEvent::Finished { .. })), "still building: {seen:?}");
+    run.stop();
+    let end = to_the_end(&mut run, Duration::from_secs(60));
+    assert!(matches!(end.last(), Some(RunEvent::Finished { paused: true, .. })), "{end:?}");
+    wait(Duration::from_secs(15), "the runner lets the project go", || !build_lock::held(&b.ws.root));
+    drop(server);
+}
+
 #[test]
 fn a_runner_that_cannot_start_ends_its_follower_with_why() {
     // The runner's own reason: its settings have no coding agent (this process's has one).

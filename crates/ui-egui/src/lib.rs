@@ -2271,6 +2271,11 @@ impl eframe::App for CraftApp {
         }
         // Builds running in their own process go on or pause as chosen; the app's own stop.
         if self.close_choice() == craft_anything_engine::settings::OnClose::Keep {
+            // Only a choice tells them to keep going with nobody watching; without one they
+            // pause at their next turn (#1970).
+            if self.chose_to_keep_building() {
+                self.runs.keep_followed();
+            }
             self.runs.detach_all();
         }
         self.runs.stop_all();

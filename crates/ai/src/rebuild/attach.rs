@@ -20,6 +20,16 @@
 //!   to the notes folder with ids from [`notes::foreign_id`], and the run takes each one it
 //!   doesn't know as one of its waiting notes (and gives it up if its file goes before the builder
 //!   reads it).
+//! - `run-stop.json` (`{version, token}`), beside `control/` because a run clears that as it
+//!   begins: a Pause asked while a runner is still starting ([`starting`]), written at once for the
+//!   token that runner was started with ([`RunOptions::start_token`]). The run pauses as it begins
+//!   when it finds its own token there (or later, at its next look), and removes it; one with
+//!   another token is an earlier start's and goes. So the Pause holds even if the window that
+//!   asked closes before the runner has begun.
+//! - `watchers.lock` ([`craft_anything_engine::workspace::watchers`]), held (shared) by every
+//!   follower for its life, so the run can tell whether anyone watches ([`super::unwatched`]); a
+//!   follower also removes the app's "keep building" marker as it begins, so it holds only until
+//!   a window watches again.
 //!
 //! Tool inputs and program output are scrubbed of what looks like a secret before they're logged,
 //! as the activity log does, and on Unix the log is readable only by its owner.
@@ -27,6 +37,7 @@
 use super::activity::Activity;
 use super::*;
 use craft_anything_engine::journal;
+use craft_anything_engine::workspace::watchers::Watching;
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::io::{BufWriter, Read, Seek, SeekFrom, Write};
@@ -69,6 +80,70 @@ pub fn stop_path(root: &Path) -> PathBuf {
 
 fn answers_dir(root: &Path) -> PathBuf {
     control_dir(root).join("answers")
+}
+
+/// A Pause asked before a runner's run began, for that start's token (in the project's inbox/).
+pub const RUN_STOP_FILE: &str = "run-stop.json";
+/// `run-stop.json`'s format.
+pub const RUN_STOP_VERSION: u32 = 1;
+
+pub fn run_stop_path(root: &Path) -> PathBuf {
+    root.join("inbox").join(RUN_STOP_FILE)
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct RunStop {
+    version: u32,
+    token: String,
+}
+
+/// The token `run-stop.json` names, if it can be read. A file from a newer version is still a
+/// Pause for its token, as long as it says one.
+fn run_stop_token(root: &Path) -> Option<String> {
+    let bytes = std::fs::read(run_stop_path(root)).ok()?;
+    serde_json::from_slice::<Value>(&bytes).ok()?.get("token")?.as_str().map(str::to_string)
+}
+
+/// Ask the runner started with `token` to pause before its run has begun.
+fn write_run_stop(root: &Path, token: &str) {
+    let written = serde_json::to_vec(&RunStop { version: RUN_STOP_VERSION, token: token.to_string() })
+        .map_err(|e| ToolError::internal(e.to_string()))
+        .and_then(|bytes| craft_anything_platform::fs::write_atomic(&run_stop_path(root), &bytes));
+    if let Err(e) = written {
+        log::warn!("Couldn't ask the build to pause: {}", e.message);
+    }
+}
+
+/// A run begins: was a Pause asked for its start (`token`) before it did? The file goes either
+/// way: one for another token is from an earlier start.
+pub(super) fn stopped_before_start(root: &Path, token: Option<&str>) -> bool {
+    let path = run_stop_path(root);
+    if !path.exists() {
+        return false;
+    }
+    let asked = token.is_some_and(|t| run_stop_token(root).as_deref() == Some(t));
+    let _ = std::fs::remove_file(&path);
+    asked
+}
+
+/// A follower begins: it watches the build, and a "keep building" said before goes, so a later
+/// end of this follower without the choice pauses the build again ([`super::unwatched`]).
+fn begin_watching(root: &Path) -> Option<Watching> {
+    let _ = std::fs::remove_file(super::unwatched::keep_path(root));
+    match Watching::begin(root) {
+        Ok(w) => w,
+        Err(e) => {
+            log::warn!("Couldn't mark the build of {} as watched, so it may pause while shown: {e}", root.display());
+            None
+        }
+    }
+}
+
+/// The person chose to keep the build going with nobody watching ([`super::unwatched`]).
+pub(super) fn keep_building(root: &Path) {
+    if let Err(e) = craft_anything_platform::fs::write_atomic(&super::unwatched::keep_path(root), b"") {
+        log::warn!("Couldn't tell the build to keep going while the app is closed: {}", e.message);
+    }
 }
 
 fn unix_ms() -> u64 {
@@ -206,9 +281,16 @@ fn scrubbed(e: &RunEvent) -> Cow<'_, RunEvent> {
 
 /// Look after what followers leave for the run, every [`CONTROL_EVERY`] until `running` goes
 /// false (the run finished).
-pub(super) fn watch(root: PathBuf, stop: CancelToken, notes: Arc<Mutex<Vec<Note>>>, feed: Arc<Mutex<feed::FeedLog>>, running: Arc<AtomicBool>) {
+pub(super) fn watch(
+    root: PathBuf,
+    stop: CancelToken,
+    notes: Arc<Mutex<Vec<Note>>>,
+    feed: Arc<Mutex<feed::FeedLog>>,
+    running: Arc<AtomicBool>,
+    control: Control,
+) {
     let spawned = std::thread::Builder::new().name("rebuild-control".into()).spawn(move || {
-        let mut control = Control::default();
+        let mut control = control;
         while running.load(Ordering::SeqCst) {
             std::thread::sleep(CONTROL_EVERY);
             control.once(&root, &stop, &notes, &feed);
@@ -224,6 +306,11 @@ pub(super) fn watch(root: PathBuf, stop: CancelToken, notes: Arc<Mutex<Vec<Note>
 pub(super) struct Control {
     /// Followers' notes already taken, so one isn't taken twice once the builder has it.
     adopted: HashSet<u64>,
+    /// The runner start this run is ([`RunOptions::start_token`]): a Pause written for it in
+    /// `run-stop.json` after the run began is still taken.
+    token: Option<String>,
+    /// Who watches, for a runner's run ([`super::unwatched`]).
+    watch: Option<Arc<super::unwatched::Watch>>,
 }
 
 #[derive(Deserialize)]
@@ -233,11 +320,25 @@ struct AnswerFile {
 }
 
 impl Control {
+    pub(super) fn new(token: Option<String>, watch: Option<Arc<super::unwatched::Watch>>) -> Control {
+        Control { adopted: HashSet::new(), token, watch }
+    }
+
     pub(super) fn once(&mut self, root: &Path, stop: &CancelToken, notes: &Mutex<Vec<Note>>, feed: &Mutex<feed::FeedLog>) {
         let stop_file = stop_path(root);
         if stop_file.exists() {
             stop.cancel();
             let _ = std::fs::remove_file(&stop_file);
+        }
+        // Written by a window that asked before the run began and saw it begin only later.
+        if let Some(token) = &self.token
+            && run_stop_token(root).as_deref() == Some(token.as_str())
+        {
+            stop.cancel();
+            let _ = std::fs::remove_file(run_stop_path(root));
+        }
+        if let Some(w) = &self.watch {
+            w.look();
         }
         if let Ok(entries) = std::fs::read_dir(answers_dir(root)) {
             let mut files: Vec<PathBuf> = entries.flatten().map(|e| e.path()).filter(|p| p.extension().is_some_and(|x| x == "json")).collect();
@@ -278,6 +379,9 @@ pub(super) struct Remote {
     begun: AtomicBool,
     /// Pause was asked for: written again once the run has begun, if it hadn't yet.
     stop_asked: AtomicBool,
+    /// The runner's start ([`RunOptions::start_token`]): a Pause asked before its run began is
+    /// written for it at once, so it holds even if this process ends first.
+    token: Option<String>,
 }
 
 impl Remote {
@@ -285,16 +389,23 @@ impl Remote {
         Remote { begun: AtomicBool::new(true), ..Remote::default() }
     }
 
+    fn starting(token: Option<String>) -> Remote {
+        Remote { token, ..Remote::default() }
+    }
+
     pub(super) fn preview_url(&self) -> Option<String> {
         self.preview.lock().unwrap_or_else(PoisonError::into_inner).clone()
     }
 
-    /// Ask the run to pause. Before it has begun the request is only remembered: a run clears
-    /// control/ as it begins, and until then the lock may still be another build's.
+    /// Ask the run to pause. Before it has begun the request can't go in control/ (a run clears
+    /// it as it begins, and until then the lock may still be another build's): it's remembered,
+    /// and written for this start's token in `run-stop.json`, which only that runner takes.
     pub(super) fn ask_to_stop(&self, root: &Path) {
         self.stop_asked.store(true, Ordering::SeqCst);
         if self.begun.load(Ordering::SeqCst) {
             write_stop(root);
+        } else if let Some(token) = &self.token {
+            write_run_stop(root, token);
         }
     }
 
@@ -462,6 +573,7 @@ impl Parts {
             started,
             activity: self.activity.clone(),
             remote: Some(self.remote.clone()),
+            _watching: begin_watching(&self.root),
         }
     }
 
@@ -668,6 +780,9 @@ impl RebuildRun {
 /// asked for before the run began reaches it as soon as it has. Dropping the follower leaves the
 /// build running (a start under way still finishes, and a pause asked for is still delivered).
 /// `handle` (what `start` returns, e.g. the runner's process) is kept while the build is followed.
+///
+/// `opts.start_token` names this start: a pause asked for before the run began is also written
+/// at once for it (`run-stop.json`), so it holds even if this process ends before the run begins.
 pub(super) fn starting<H: Send + 'static>(
     ws: &Workspace,
     opts: &RunOptions,
@@ -680,7 +795,7 @@ pub(super) fn starting<H: Send + 'static>(
     if let Some(shown) = &opts.shown {
         items.push(FeedItem::User(feed::UserItem::new(shown.clone(), opts.shown_pictures.clone())));
     }
-    let parts = Parts::new(&root, items, activity, Remote::default(), opts.wake.clone());
+    let parts = Parts::new(&root, items, activity, Remote::starting(opts.start_token.clone()), opts.wake.clone());
     let (tx, rx) = std::sync::mpsc::channel();
     let stop = CancelToken::default();
     let (p, quit) = (parts.clone(), stop.clone());

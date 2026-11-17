@@ -2711,11 +2711,34 @@ fn a_build_running_in_another_process_is_attached_to() {
     assert!(notes::waiting(&notes::notes_dir(&ws.inbox_dir())).is_empty(), "taken back, so its owner can't send it too");
 }
 
+/// #1970: a question a build elsewhere asked before the app attached to it marks the project as
+/// needing the person, though the open project takes the build's feed whole.
+#[test]
+fn a_question_waiting_when_the_app_attaches_says_it_needs_you() {
+    use craft_anything_ai::rebuild::{Elsewhere, RunEvent, StandIns};
+    use craft_anything_engine::inbox::{Inbox, RequestKind};
+    use craft_anything_engine::workspace::{TargetRef, Workspace};
+    let d = tempfile::tempdir().unwrap();
+    let ws = Workspace::create(d.path(), "Foxtrot", "A clock app", TargetRef::None).unwrap();
+    let owner = Elsewhere::start(&ws, "make the hands red").unwrap();
+    let inbox = Inbox::new(ws.inbox_dir());
+    let id = inbox.post(RequestKind::Question, "Red or orange?", "", vec![], true, None).unwrap();
+    owner.emit(RunEvent::Ask(inbox.pending().into_iter().find(|r| r.id == id).unwrap()));
+    let runs = StandIns::new();
+    let mut h = app_with_projects(d.path().to_path_buf(), &runs);
+    // Open before it's attached to, so attaching takes the feed for the screen.
+    h.state_mut().open_workspace(ws.clone());
+    assert!(attached(&mut h, &ws.root));
+    h.run_steps(2);
+    assert!(h.state().asking.contains(&ws.root), "it needs the person");
+    drop(owner);
+}
+
 /// #1970: closing the window while a build runs in its own process asks whether to keep it
 /// building; the answer decides what closing does to it, and can be kept as the setting.
 #[test]
 fn closing_during_a_build_elsewhere_asks_whether_to_keep_it() {
-    use craft_anything_ai::rebuild::{Elsewhere, StandIns, attach};
+    use craft_anything_ai::rebuild::{Elsewhere, StandIns, attach, unwatched};
     use craft_anything_engine::settings::OnClose;
     use craft_anything_engine::workspace::{TargetRef, Workspace};
     use craft_anything_ui_egui::state::Modal;
@@ -2755,11 +2778,13 @@ fn closing_during_a_build_elsewhere_asks_whether_to_keep_it() {
     h.state_mut().on_exit();
     owner.look();
     assert!(!owner.pause_asked() && !attach::stop_path(&ws.root).exists(), "left building");
+    assert!(unwatched::keep_path(&ws.root).exists(), "and told to go on with nobody watching");
     drop(h);
 
     // Pause.
     let mut h = app_with_projects(d.path().to_path_buf(), &runs);
     assert!(attached(&mut h, &ws.root), "attached again by the next window");
+    assert!(!unwatched::keep_path(&ws.root).exists(), "which takes that back, so its own crash would pause it");
     assert!(ask_to_close(&mut h));
     h.run_steps(2);
     h.get_by_label("Pause").click();
@@ -2768,8 +2793,21 @@ fn closing_during_a_build_elsewhere_asks_whether_to_keep_it() {
     assert_eq!(h.state().settings.build.on_close, OnClose::Ask, "asked again next time");
     h.state_mut().on_exit();
     assert!(attach::stop_path(&ws.root).exists(), "asked to pause");
+    assert!(!unwatched::keep_path(&ws.root).exists());
     owner.look();
     assert!(owner.pause_asked());
+    drop(h);
+
+    // A window that closes without being asked to (with the setting at ask) leaves it building,
+    // but without the choice: it pauses at its next turn once nobody watches.
+    drop(owner);
+    let mut owner = Elsewhere::start(&ws, "make the hands blue").unwrap();
+    let mut h = app_with_projects(d.path().to_path_buf(), &runs);
+    assert!(attached(&mut h, &ws.root));
+    h.state_mut().on_exit();
+    owner.look();
+    assert!(!owner.pause_asked(), "left building");
+    assert!(!unwatched::keep_path(&ws.root).exists(), "nothing said to keep going");
     drop(h);
 
     // The setting answers without asking.

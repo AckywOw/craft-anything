@@ -70,7 +70,7 @@ impl CraftApp {
             return;
         };
         let staging = self.engine.session().config_dir().join("runner");
-        self.runs = rebuild::RunSet::new(self.settings.build.parallel).with_starter(rebuild::runner::starter(cli, staging));
+        self.runs = rebuild::runner::run_set(self.settings.build.parallel, cli, staging);
     }
 
     /// The window was asked to close. True keeps it open: builds running in their own process are
@@ -91,6 +91,15 @@ impl CraftApp {
                 false
             }
         }
+    }
+
+    /// The person chose to keep builds running in their own process going after closing: in the
+    /// close dialog, or by the `keep` setting. A window that closes without a choice (its close
+    /// wasn't requested, with the setting at ask) leaves them building but hasn't said so, so
+    /// they pause at their next turn once nobody has watched for a while (#1970).
+    pub fn chose_to_keep_building(&self) -> bool {
+        use craft_anything_engine::settings::OnClose;
+        self.close_choice.unwrap_or(self.settings.build.on_close) == OnClose::Keep
     }
 
     /// What closing does to builds running in their own process: what was chosen, else the
@@ -128,9 +137,16 @@ impl CraftApp {
                 return;
             }
         };
+        // A question it asked before it was attached to waits for the person: its event went into
+        // the feed the follower started with, which the open project takes whole (`feed_now`).
+        let waiting = run.waits_for_answer();
         // Started or attached here meanwhile: this follower goes, and the build is left alone.
         if self.runs.adopt(run).is_err() {
             return;
+        }
+        if waiting {
+            self.asking.insert(root.clone());
+            self.attention = true;
         }
         if self.workspace.as_ref().is_some_and(|w| w.root == root) {
             if let Some(run) = self.runs.get_mut(&root) {
@@ -339,7 +355,14 @@ impl CraftApp {
             self.poll_run();
             self.preview = None;
             self.state.feed = match self.runs.get_mut(&ws.root).filter(|r| r.is_running()) {
-                Some(run) => run.feed_now(),
+                Some(run) => {
+                    let items = run.feed_now();
+                    // Its events are taken whole: a question among them still waits.
+                    if run.waits_for_answer() {
+                        self.asking.insert(ws.root.clone());
+                    }
+                    items
+                }
                 None => feed::load(&ws),
             };
             self.load_asked(&ws);
