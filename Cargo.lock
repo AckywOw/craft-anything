@@ -252,7 +252,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -263,7 +263,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1340,12 +1340,19 @@ dependencies = [
  "bzip2-rs",
  "craft-anything-testkit",
  "craft-elf",
+ "craft-evm",
+ "craft-har",
+ "craft-java-class",
  "craft-jsonc",
  "craft-macho",
  "craft-mime",
+ "craft-pcap",
  "craft-pe",
  "craft-plist",
  "craft-sourcemap",
+ "craft-tar",
+ "craft-wasm",
+ "craft-zip",
  "lzma-rs",
  "miniz_oxide 0.8.9",
  "object 0.36.7",
@@ -1496,12 +1503,40 @@ dependencies = [
 [[package]]
 name = "craft-codepage"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=de97c35f2b2af01c62371647e57a6affeab456fd#de97c35f2b2af01c62371647e57a6affeab456fd"
+source = "git+https://github.com/storytold/craft-libs?rev=d118983bf922ac96c68b885dc55da30435adbc7d#d118983bf922ac96c68b885dc55da30435adbc7d"
 
 [[package]]
 name = "craft-elf"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=fd91be74f078d7062945ff6512cf65afea0c73ac#fd91be74f078d7062945ff6512cf65afea0c73ac"
+source = "git+https://github.com/storytold/craft-libs?rev=d118983bf922ac96c68b885dc55da30435adbc7d#d118983bf922ac96c68b885dc55da30435adbc7d"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-evm"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=8cbe36c1130d6e2fc868b7022e0cac09b63a5bbd#8cbe36c1130d6e2fc868b7022e0cac09b63a5bbd"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-har"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=d118983bf922ac96c68b885dc55da30435adbc7d#d118983bf922ac96c68b885dc55da30435adbc7d"
+dependencies = [
+ "serde_json",
+ "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-java-class"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=d118983bf922ac96c68b885dc55da30435adbc7d#d118983bf922ac96c68b885dc55da30435adbc7d"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1510,7 +1545,7 @@ dependencies = [
 [[package]]
 name = "craft-jsonc"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=64fcd9531ae2f6a8f9498478805cfc7228189a9b#64fcd9531ae2f6a8f9498478805cfc7228189a9b"
+source = "git+https://github.com/storytold/craft-libs?rev=d118983bf922ac96c68b885dc55da30435adbc7d#d118983bf922ac96c68b885dc55da30435adbc7d"
 dependencies = [
  "serde_json",
 ]
@@ -1518,7 +1553,7 @@ dependencies = [
 [[package]]
 name = "craft-macho"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=83cb1133dd2bdd0d655ba2300f88863f0f53db0b#83cb1133dd2bdd0d655ba2300f88863f0f53db0b"
+source = "git+https://github.com/storytold/craft-libs?rev=d118983bf922ac96c68b885dc55da30435adbc7d#d118983bf922ac96c68b885dc55da30435adbc7d"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1527,7 +1562,7 @@ dependencies = [
 [[package]]
 name = "craft-mime"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=de97c35f2b2af01c62371647e57a6affeab456fd#de97c35f2b2af01c62371647e57a6affeab456fd"
+source = "git+https://github.com/storytold/craft-libs?rev=d118983bf922ac96c68b885dc55da30435adbc7d#d118983bf922ac96c68b885dc55da30435adbc7d"
 dependencies = [
  "chrono",
  "craft-codepage",
@@ -1535,9 +1570,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "craft-pcap"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=d9f0ada8b342f2164b0c4d0c831f5d5da30e8713#d9f0ada8b342f2164b0c4d0c831f5d5da30e8713"
+dependencies = [
+ "chrono",
+ "serde",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "craft-pe"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=83cb1133dd2bdd0d655ba2300f88863f0f53db0b#83cb1133dd2bdd0d655ba2300f88863f0f53db0b"
+source = "git+https://github.com/storytold/craft-libs?rev=d118983bf922ac96c68b885dc55da30435adbc7d#d118983bf922ac96c68b885dc55da30435adbc7d"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1546,7 +1591,7 @@ dependencies = [
 [[package]]
 name = "craft-plist"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=28561846057d88b8c2454b677856081707109631#28561846057d88b8c2454b677856081707109631"
+source = "git+https://github.com/storytold/craft-libs?rev=d118983bf922ac96c68b885dc55da30435adbc7d#d118983bf922ac96c68b885dc55da30435adbc7d"
 dependencies = [
  "thiserror 2.0.21",
 ]
@@ -1554,16 +1599,24 @@ dependencies = [
 [[package]]
 name = "craft-sniff"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=070005125f0af1a5ae4a59002270e5849505bfc0#070005125f0af1a5ae4a59002270e5849505bfc0"
+source = "git+https://github.com/storytold/craft-libs?rev=d118983bf922ac96c68b885dc55da30435adbc7d#d118983bf922ac96c68b885dc55da30435adbc7d"
 
 [[package]]
 name = "craft-sourcemap"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=c9a367b45b8d4ab688165139fde4795fa19589cf#c9a367b45b8d4ab688165139fde4795fa19589cf"
+source = "git+https://github.com/storytold/craft-libs?rev=d118983bf922ac96c68b885dc55da30435adbc7d#d118983bf922ac96c68b885dc55da30435adbc7d"
 dependencies = [
  "serde",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "craft-tar"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=d118983bf922ac96c68b885dc55da30435adbc7d#d118983bf922ac96c68b885dc55da30435adbc7d"
+dependencies = [
+ "serde",
 ]
 
 [[package]]
@@ -1588,6 +1641,32 @@ dependencies = [
  "verifysign",
  "winreg 0.55.0",
  "winsafe",
+ "zip",
+]
+
+[[package]]
+name = "craft-wasm"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=d118983bf922ac96c68b885dc55da30435adbc7d#d118983bf922ac96c68b885dc55da30435adbc7d"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+ "wasmparser 0.261.0",
+ "wasmprinter 0.261.0",
+]
+
+[[package]]
+name = "craft-zip"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=1928693fbb7a4f8e6b945e614b2fac3e181476ea#1928693fbb7a4f8e6b945e614b2fac3e181476ea"
+dependencies = [
+ "bzip2-rs",
+ "flate2",
+ "lzma-rs",
+ "miniz_oxide 0.8.9",
+ "ruzstd",
+ "serde",
+ "thiserror 2.0.21",
  "zip",
 ]
 
@@ -1955,7 +2034,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.61.2",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2432,7 +2511,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -3801,7 +3880,7 @@ dependencies = [
  "objc2-foundation 0.3.2",
  "png 0.18.1",
  "thiserror 2.0.21",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -5844,7 +5923,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -5901,7 +5980,7 @@ dependencies = [
  "security-framework 3.7.0",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6560,7 +6639,7 @@ dependencies = [
  "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.5",
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]
@@ -6862,7 +6941,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.61.2",
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -7884,7 +7963,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.61.2",
+ "windows-sys 0.52.0",
 ]
 
 [[package]]

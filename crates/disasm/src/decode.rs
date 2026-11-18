@@ -1034,13 +1034,25 @@ fn decode_a32(mode: Mode, bytes: &[u8], addr: u64, fmt: bool) -> Option<Insn> {
     let mut writes = Vec::new();
     let mut pops_pc = false;
     let mut reg_ops: Vec<u8> = Vec::new();
+    let mut reg_list: Vec<u8> = Vec::new();
     // A memory operand no C statement says whole (write-back, a subtracted or shifted index): the
     // lifter shows the instruction as written rather than a wrong expression (#277).
     let mut exact = true;
+    let mut refs = Vec::new();
+    let mut mem_slot = None;
+    let is_literal_load = matches!(inst.opcode, Opcode::LDR | Opcode::LDRB | Opcode::LDRH | Opcode::LDRSB | Opcode::LDRSH | Opcode::LDRD);
     let size = if matches!(inst.opcode, Opcode::LDR | Opcode::STR) { 4 } else { 0 };
-    let mem = |base: u8, index: Option<u8>, disp: i64| {
-        // A literal load reads from the word-aligned PC.
-        let pc = (base == 15).then(|| (addr.wrapping_add(pc_bias) & !3).wrapping_add(disp as u64));
+    // A32 permits (deprecated) non-writeback stores with PC as the base; T32 does not.
+    let is_a32_pc_store = mode == Mode::A32 && matches!(inst.opcode, Opcode::STR | Opcode::STRB | Opcode::STRH | Opcode::STRD);
+    let mut mem = |base: u8, index: Option<u8>, disp: i64, literal: bool| {
+        // A non-writeback immediate offset from PC names a fixed address, measured from the
+        // word-aligned PC, for literal loads and A32 stores (not hints like `pld`/`nop.w`, nor
+        // T32 stores). Only literal loads read a literal, so only they are references and slots.
+        let pc = (literal && base == 15 && (is_literal_load || is_a32_pc_store)).then(|| (addr.wrapping_add(pc_bias) & !3).wrapping_add(disp as u64));
+        if let Some(a) = pc.filter(|_| is_literal_load) {
+            refs.push(a);
+            mem_slot = Some(a);
+        }
         let (base, disp) = if pc.is_some() { (None, 0) } else { (Some(format!("r{base}")), disp) };
         Op::Mem(MemOp { base, index: index.map(|i| format!("r{i}")), index_shift: None, scale: 1, disp, size, addr: pc, seg: None })
     };
@@ -1048,13 +1060,13 @@ fn decode_a32(mode: Mode, bytes: &[u8], addr: u64, fmt: bool) -> Option<Insn> {
         match *o {
             Operand::Nothing => break,
             Operand::RegDerefPreindexOffset(r, off, add, false) => {
-                ops.push(mem(r.number(), None, if add { i64::from(off) } else { -i64::from(off) }));
+                ops.push(mem(r.number(), None, if add { i64::from(off) } else { -i64::from(off) }, true));
                 if r.number() != 15 {
                     push_unique(&mut reads, format!("r{}", r.number()));
                 }
             }
             Operand::RegDerefPreindexReg(r, m, true, false) if r.number() != 15 => {
-                ops.push(mem(r.number(), Some(m.number()), 0));
+                ops.push(mem(r.number(), Some(m.number()), 0, false));
                 push_unique(&mut reads, format!("r{}", r.number()));
                 push_unique(&mut reads, format!("r{}", m.number()));
             }
@@ -1065,7 +1077,7 @@ fn decode_a32(mode: Mode, bytes: &[u8], addr: u64, fmt: bool) -> Option<Insn> {
             | Operand::RegDerefPreindexRegShift(r, ..)
             | Operand::RegDerefPostindexRegShift(r, ..) => {
                 exact = false;
-                ops.push(mem(r.number(), None, 0));
+                ops.push(mem(r.number(), None, 0, false));
                 push_unique(&mut reads, format!("r{}", r.number()));
             }
             Operand::BranchOffset(off) => {
@@ -1086,8 +1098,20 @@ fn decode_a32(mode: Mode, bytes: &[u8], addr: u64, fmt: bool) -> Option<Insn> {
                 target = Some(t);
                 ops.push(Op::Addr(t));
             }
-            Operand::Reg(r) | Operand::RegWBack(r, _) | Operand::RegDeref(r) => {
+            Operand::Reg(r) => {
                 reg_ops.push(r.number());
+                ops.push(Op::Reg(format!("r{}", r.number())));
+            }
+            Operand::RegDeref(r) => {
+                push_unique(&mut reads, format!("r{}", r.number()));
+                ops.push(Op::Reg(format!("r{}", r.number())));
+            }
+            Operand::RegWBack(r, wb) => {
+                let name = format!("r{}", r.number());
+                push_unique(&mut reads, name.clone());
+                if wb {
+                    push_unique(&mut writes, name);
+                }
                 ops.push(Op::Reg(format!("r{}", r.number())));
             }
             Operand::RegList(list) => {
@@ -1096,7 +1120,7 @@ fn decode_a32(mode: Mode, bytes: &[u8], addr: u64, fmt: bool) -> Option<Insn> {
                 }
                 for i in 0..16u8 {
                     if list & (1 << i) != 0 {
-                        reg_ops.push(i);
+                        reg_list.push(i);
                     }
                 }
             }
@@ -1126,7 +1150,7 @@ fn decode_a32(mode: Mode, bytes: &[u8], addr: u64, fmt: bool) -> Option<Insn> {
             }
         }
         Opcode::POP | Opcode::LDM(..) if pops_pc => Flow::Return,
-        Opcode::LDR if first_is_pc => Flow::IndirectJump { slot: None },
+        Opcode::LDR if first_is_pc => Flow::IndirectJump { slot: mem_slot },
         Opcode::MOV if first_is_pc && reg_ops.get(1) == Some(&14) => Flow::Return,
         Opcode::UDF | Opcode::BKPT => Flow::Stop,
         _ => Flow::Next,
@@ -1152,9 +1176,26 @@ fn decode_a32(mode: Mode, bytes: &[u8], addr: u64, fmt: bool) -> Option<Insn> {
         Opcode::BL | Opcode::BLX => Kind::Call,
         _ => Kind::Other,
     };
+    let list_writes = matches!(inst.opcode, Opcode::POP | Opcode::LDM(..));
+    for r in reg_list {
+        let n = format!("r{r}");
+        if list_writes {
+            push_unique(&mut writes, n);
+        } else {
+            push_unique(&mut reads, n);
+        }
+    }
+    if matches!(inst.opcode, Opcode::POP | Opcode::PUSH) {
+        // Thumb `pop`/`push` omit `sp` from `inst.operands`, but both read and update `r13`.
+        push_unique(&mut reads, "r13".into());
+        push_unique(&mut writes, "r13".into());
+    }
+    // Every plain store reads its first register (the value), though only `STR` lifts as a store.
+    // (`STREX` is not one: its first register is the status it writes.)
+    let stores_first = matches!(inst.opcode, Opcode::STRB | Opcode::STRH | Opcode::STRD | Opcode::STRT | Opcode::STRBT | Opcode::STRHT);
     for (i, r) in reg_ops.iter().enumerate() {
         let n = format!("r{r}");
-        if i == 0 && !matches!(kind, Kind::Store | Kind::Cmp | Kind::Test | Kind::Push | Kind::Branch | Kind::Call) {
+        if i == 0 && !stores_first && !matches!(kind, Kind::Store | Kind::Cmp | Kind::Test | Kind::Push | Kind::Branch | Kind::Call) {
             push_unique(&mut writes, n);
         } else {
             push_unique(&mut reads, n);
@@ -1185,20 +1226,7 @@ fn decode_a32(mode: Mode, bytes: &[u8], addr: u64, fmt: bool) -> Option<Insn> {
     };
     let (mnemonic, operands) = if fmt { split_text(&inst.to_string()) } else { (name, String::new()) };
     let operands = absolutize(&operands, addr.wrapping_add(pc_bias));
-    Some(Insn {
-        addr,
-        len,
-        mnemonic,
-        operands,
-        kind,
-        flow,
-        cond,
-        refs: Vec::new(),
-        ops,
-        reads,
-        writes,
-        sets_flags: inst.s || matches!(kind, Kind::Cmp | Kind::Test),
-    })
+    Some(Insn { addr, len, mnemonic, operands, kind, flow, cond, refs, ops, reads, writes, sets_flags: inst.s || matches!(kind, Kind::Cmp | Kind::Test) })
 }
 
 // ---------------------------------------------------------------------------------------------
