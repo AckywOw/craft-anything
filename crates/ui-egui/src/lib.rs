@@ -260,6 +260,10 @@ pub enum Done {
         result: Result<(), ToolError>,
         /// `CraftApp::backend_choices` when the add started: a choice made since then stands.
         choices: u64,
+        /// The address that was asked, as sent (trimmed); empty when the AI wasn't added by
+        /// address. A list of models to choose from belongs to this address, not to whatever the
+        /// form shows when the answer arrives.
+        address: String,
     },
     /// The projects folder was listed.
     Projects(Vec<craft_anything_engine::workspace::Workspace>),
@@ -303,12 +307,18 @@ pub enum Done {
 pub struct ServerForm {
     pub name: String,
     pub address: String,
-    /// Empty: the first model it lists that can chat.
+    /// Empty: the one it has loaded, or its only chat model; with several, the person chooses.
     pub model: String,
     pub key: String,
     /// The server being asked for its models (the job, its name, when it started); the form says
     /// it's connecting and for how long (#1429).
     pub connecting: Option<(u64, String, Instant)>,
+    /// The chat models the server at `address` listed when it couldn't be told which one is in use
+    /// (#1434): the form offers them to choose from while the address stays the same.
+    pub choices: Option<(String, Vec<String>)>,
+    /// The address and model last picked from `choices`: that model belongs to that server, so it
+    /// goes from `model` once the address is another. A model typed by hand isn't tracked.
+    pub picked: Option<(String, String)>,
 }
 
 /// What a file dialog was for.
@@ -586,6 +596,8 @@ pub struct CraftApp {
     view_dirty: bool,
     last_view: Option<Instant>,
     applied_theme: Option<(ThemeKind, bool)>,
+    /// The system's light or dark appearance, read each frame: the System theme follows it.
+    system_theme: Option<egui::Theme>,
     started: bool,
 }
 
@@ -681,6 +693,7 @@ impl CraftApp {
             view_dirty: true,
             last_view: None,
             applied_theme: None,
+            system_theme: None,
             started: false,
         };
         // A config.toml that couldn't be read or set aside is said here, where the person is
@@ -783,8 +796,9 @@ impl CraftApp {
         self.settings.mode == Mode::Beginner
     }
 
+    /// The theme drawn with: the one chosen, or with System, the system's appearance.
     pub fn theme_kind(&self) -> ThemeKind {
-        ThemeKind::from_id(&self.settings.theme)
+        theme::resolve(&self.settings.theme, self.system_theme)
     }
 
     pub fn log(&mut self, error: bool, text: impl Into<String>) {
@@ -882,7 +896,7 @@ impl CraftApp {
             // by an older settings snapshot. This runs on the worker, never the UI thread.
             let session = engine.session();
             session.label("Save settings");
-            session.settings.save().map_err(|e| e.message)?;
+            session.settings.save().map_err(|e| settings_ui::settings_not_saved(&e))?;
             Ok(Done::Nothing)
         }));
     }
@@ -1353,7 +1367,7 @@ impl CraftApp {
         let choices = self.backend_choices;
         self.jobs.spawn(i18n::trf("Connect {name}", &[("name", &name)]), true, move |_| {
             let result = hub.add_backend(config, key);
-            Ok(Done::BackendAdded { name, result, choices })
+            Ok(Done::BackendAdded { name, result, choices, address: String::new() })
         });
     }
 
@@ -1536,7 +1550,9 @@ impl CraftApp {
         if self.creating == Some(job) {
             self.creating = None;
         }
-        if self.server_form.connecting.as_ref().is_some_and(|(id, ..)| *id == job) {
+        // The form's own request: a newer Add replaces it, and an older answer is then stale.
+        let form_request = self.server_form.connecting.as_ref().is_some_and(|(id, ..)| *id == job);
+        if form_request {
             self.server_form.connecting = None;
         }
         self.chat_jobs.retain(|id| *id != job);
@@ -1740,7 +1756,7 @@ impl CraftApp {
                     self.toast(error.for_people(), true);
                 }
             }
-            Done::BackendAdded { name, result, choices } => match result {
+            Done::BackendAdded { name, result, choices, address } => match result {
                 Ok(()) => {
                     if self.server_form.name.trim() == name {
                         self.server_form = ServerForm::default();
@@ -1752,8 +1768,19 @@ impl CraftApp {
                     }
                     self.refresh_backends();
                 }
+                // Stopping an add says nothing new about the server: a list it offered stays.
                 Err(e) if e.code == ErrorCode::Cancelled => self.toast(i18n::trf("Stopped adding {name}.", &[("name", &name)]), false),
-                Err(e) => self.toast(e.for_people(), true),
+                Err(e) => {
+                    // The form's own request answered: several chat models and none known to be
+                    // loaded are offered in the form, for the address that was asked, and only
+                    // while the form still shows that server. Any other failure leaves no list.
+                    if form_request {
+                        let models = craft_anything_ai::models_to_choose(&e);
+                        let same = self.server_form.name.trim() == name && self.server_form.address.trim() == address;
+                        self.server_form.choices = (!models.is_empty() && same).then_some((address, models));
+                    }
+                    self.toast(e.for_people(), true);
+                }
             },
             Done::Picked { pick, path } => {
                 if let Some(path) = path {
@@ -1890,6 +1917,8 @@ impl CraftApp {
                 }
             }
         }
+        // eframe reports the system's appearance in each frame's input, and again when it changes.
+        self.system_theme = ctx.system_theme();
         let want = (self.theme_kind(), self.beginner());
         if self.applied_theme != Some(want) {
             theme::apply(ctx, want.0, want.1);

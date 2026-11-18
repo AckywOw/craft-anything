@@ -10,6 +10,9 @@ publish = false
 workspace = true
 
 [dependencies]
+craft-evm = { workspace = true }
+craft-java-class = { workspace = true }
+craft-pcap = { workspace = true }
 craft-wasm = { workspace = true }
 craft-har = { workspace = true }
 craft-jsonc = { workspace = true }
