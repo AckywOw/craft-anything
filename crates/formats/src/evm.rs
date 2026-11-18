@@ -42,3 +42,40 @@ mod parity {
         }
     }
 }
+
+#[cfg(test)]
+mod shared_corrections {
+    use super::*;
+
+    fn comparison(code: &mut Vec<u8>, selector: u32, target: u8) {
+        code.push(0x63);
+        code.extend(selector.to_be_bytes());
+        code.extend([0x14, 0x60, target, 0x57]);
+    }
+
+    #[test]
+    fn capped_dispatcher_does_not_claim_a_fallback() {
+        let mut code = vec![0x5b, 0x00];
+        for selector in 0..4097 {
+            comparison(&mut code, selector, 0);
+        }
+        code.extend([0x5f, 0x5f, 0xfd]);
+        // An intentional shared bug fix, not byte-for-byte legacy parity.
+        assert_eq!(legacy::analyze(&code).unwrap().fallback, "present");
+        let report = analyze(&code).unwrap();
+        assert_eq!(report.functions.len(), 4096);
+        assert_eq!(report.fallback, "unknown");
+    }
+
+    #[test]
+    fn payability_requires_a_valid_jump_target() {
+        for (tail, expected) in [(&[0x5b, 0x00][..], "payable"), (&[0x00][..], "unknown")] {
+            let mut code = Vec::new();
+            comparison(&mut code, 0x12345678, 10);
+            code.extend([0x00, 0x5b, 0x60, 14, 0x56]);
+            code.extend(tail);
+            assert_eq!(legacy::analyze(&code).unwrap().functions[0].mutability, "payable");
+            assert_eq!(analyze(&code).unwrap().functions[0].mutability, expected);
+        }
+    }
+}

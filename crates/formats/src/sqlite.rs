@@ -1026,25 +1026,24 @@ fn without_rowid_order(table: &SchemaObject) -> Option<Vec<Option<usize>>> {
     let mut seen_keys = BTreeSet::new();
     for segment in split_top_level(body) {
         let tokens = sql_tokens(segment);
-        if !tokens.windows(2).any(|pair| pair[0].eq_ignore_ascii_case("PRIMARY") && pair[1].eq_ignore_ascii_case("KEY")) {
-            continue;
-        }
-        let table_constraint = tokens.first().is_some_and(|s| s.eq_ignore_ascii_case("PRIMARY") || s.eq_ignore_ascii_case("CONSTRAINT"));
-        let terms: Vec<Vec<&str>> = if table_constraint {
-            let open = column_list_open(segment)?;
-            let close = column_list_close(segment)?;
-            split_top_level(segment.get(open.checked_add(1)?..close)?).into_iter().map(sql_tokens).collect()
+        let term_groups: Vec<Vec<&[&str]>> = if is_table_constraint_segment(&tokens) {
+            table_primary_key_groups(&tokens)?
+        } else if has_top_level_primary_key(&tokens) {
+            vec![vec![tokens.get(..1)?]]
         } else {
-            vec![vec![*tokens.first()?]]
+            continue;
         };
-        for term in terms.iter().filter(|term| !term.is_empty()) {
-            let (token, collation) = primary_key_column(term)?;
-            let (name, _) = take_identifier(token);
-            let position = table.columns.iter().position(|column| column.name.eq_ignore_ascii_case(&name))?;
-            let collation = collation.or_else(|| definitions.get(position).and_then(|(_, rest)| top_level_collation(&sql_tokens(rest)))).unwrap_or("BINARY");
-            // SQLite retains repeated terms when they use different collations.
-            if seen_keys.insert((position, take_identifier(collation).0.to_ascii_lowercase())) {
-                stored.push(position);
+        for terms in term_groups {
+            for term in terms.into_iter().filter(|term| !term.is_empty()) {
+                let (token, collation) = primary_key_column(term)?;
+                let (name, _) = take_identifier(token);
+                let position = table.columns.iter().position(|column| column.name.eq_ignore_ascii_case(&name))?;
+                let collation =
+                    collation.or_else(|| definitions.get(position).and_then(|(_, rest)| top_level_collation(&sql_tokens(rest)))).unwrap_or("BINARY");
+                // SQLite retains repeated terms when they use different collations.
+                if seen_keys.insert((position, take_identifier(collation).0.to_ascii_lowercase())) {
+                    stored.push(position);
+                }
             }
         }
     }
@@ -1057,6 +1056,81 @@ fn without_rowid_order(table: &SchemaObject) -> Option<Vec<Option<usize>>> {
         }
     }
     (0..table.columns.len()).map(|i| if is_virtual(i) { Some(None) } else { stored.iter().position(|&column| column == i).map(Some) }).collect()
+}
+
+/// Report whether a CREATE TABLE segment starts with a table-constraint keyword.
+fn is_table_constraint_segment(tokens: &[&str]) -> bool {
+    tokens.first().is_some_and(|token| ["CONSTRAINT", "PRIMARY", "UNIQUE", "CHECK", "FOREIGN"].iter().any(|word| token.eq_ignore_ascii_case(word)))
+}
+
+/// Report whether `PRIMARY KEY` appears outside parentheses in a column definition.
+fn has_top_level_primary_key(tokens: &[&str]) -> bool {
+    let mut depth = 0usize;
+    for (i, &token) in tokens.iter().enumerate() {
+        match token {
+            "(" => depth = depth.saturating_add(1),
+            ")" => depth = depth.saturating_sub(1),
+            _ if depth == 0
+                && token.eq_ignore_ascii_case("PRIMARY")
+                && tokens.get(i.saturating_add(1)).is_some_and(|next| next.eq_ignore_ascii_case("KEY")) =>
+            {
+                return true;
+            }
+            _ => {}
+        }
+    }
+    false
+}
+
+/// Collect each `PRIMARY KEY (...)` clause's top-level comma-separated term slices from a
+/// table-constraint segment, allowing adjacent comma-omitted constraints such as `UNIQUE(v) PRIMARY KEY(k)`.
+fn table_primary_key_groups<'a, 'b>(tokens: &'b [&'a str]) -> Option<Vec<Vec<&'b [&'a str]>>> {
+    let mut groups = Vec::new();
+    let mut depth = 0usize;
+    let mut i = 0usize;
+    while let Some(&token) = tokens.get(i) {
+        if depth == 0 && token.eq_ignore_ascii_case("PRIMARY") && tokens.get(i.saturating_add(1)).is_some_and(|next| next.eq_ignore_ascii_case("KEY")) {
+            let open = i.saturating_add(2);
+            if tokens.get(open) != Some(&"(") {
+                return None;
+            }
+            let mut inner_depth = 1usize;
+            let mut cursor = open.saturating_add(1);
+            let mut terms = Vec::new();
+            let mut term_start = cursor;
+            while let Some(&inner) = tokens.get(cursor) {
+                match inner {
+                    "(" => inner_depth = inner_depth.saturating_add(1),
+                    ")" => {
+                        inner_depth = inner_depth.saturating_sub(1);
+                        if inner_depth == 0 {
+                            terms.push(tokens.get(term_start..cursor)?);
+                            break;
+                        }
+                    }
+                    "," if inner_depth == 1 => {
+                        terms.push(tokens.get(term_start..cursor)?);
+                        term_start = cursor.saturating_add(1);
+                    }
+                    _ => {}
+                }
+                cursor = cursor.saturating_add(1);
+            }
+            if inner_depth != 0 {
+                return None;
+            }
+            groups.push(terms);
+            i = cursor.saturating_add(1);
+            continue;
+        }
+        match token {
+            "(" => depth = depth.saturating_add(1),
+            ")" => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+        i = i.saturating_add(1);
+    }
+    Some(groups)
 }
 
 /// Read a primary-key column and its outermost COLLATE, if given.
@@ -1253,23 +1327,21 @@ fn rowid_alias_index(sql: &str) -> Option<usize> {
     for i in body_start..=close {
         let token = *tokens.get(i)?;
         if i == close || (token == "," && depth == 0) {
-            let mut segment = tokens.get(start..i)?;
+            let segment = tokens.get(start..i)?;
             start = i.saturating_add(1);
-            if segment.first().is_some_and(|t| is(t, "CONSTRAINT")) {
-                segment = segment.get(2..)?;
-            }
-            if segment.first().is_some_and(|t| is(t, "PRIMARY")) {
-                if key.is_some() || !segment.get(1).is_some_and(|t| is(t, "KEY")) || segment.get(2) != Some(&"(") {
-                    return None;
+            if is_table_constraint_segment(segment) {
+                let groups = table_primary_key_groups(segment)?;
+                for terms in groups {
+                    if key.is_some() || terms.len() != 1 {
+                        return None;
+                    }
+                    let term = *terms.first()?;
+                    let term = if term.last().is_some_and(|token| is(token, "AUTOINCREMENT")) { term.get(..term.len().checked_sub(1)?)? } else { term };
+                    let (name_token, _) = primary_key_column(term)?;
+                    let (name, _) = take_identifier(name_token);
+                    key = Some(columns.iter().position(|(column, _)| column.name.eq_ignore_ascii_case(&name))?);
                 }
-                let end = segment.iter().position(|t| *t == ")")?;
-                let members = segment.get(3..end)?;
-                if members.contains(&",") {
-                    return None;
-                }
-                let (name, _) = take_identifier(members.first()?);
-                key = Some(columns.iter().position(|(column, _)| column.name.eq_ignore_ascii_case(&name))?);
-            } else if !segment.first().is_some_and(|t| ["UNIQUE", "CHECK", "FOREIGN"].iter().any(|word| is(t, word))) {
+            } else {
                 let mut nesting = 0usize;
                 for (j, t) in segment.iter().enumerate().skip(1) {
                     match *t {
