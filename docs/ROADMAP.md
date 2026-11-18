@@ -1038,6 +1038,9 @@ Owner: open · Status: in progress
       document functions touched by the OpenCode model-selection changes.
 - [x] Integrate the five-level `Effort` type from #395 for agent variants, and share a strict
       disk-based selection save between the hub and headless tools, preserving unrelated edits.
+- [x] Settings → AI offers no model choice for Codex, so its model can only be set by editing
+      config.toml (#2109): offer Codex's own listed models (`codex debug models`) and its default
+      — claimed: justinjohn0306, branch bugfix/r2.2-codex-model-picker
 - [x] Rebase onto main after #395's squash merge, preserve extra model arguments without a saved
       selection, and render the remote-host placeholder visibly in the setup instructions.
 - [x] Hold the UI settings worker's session guard through its disk save so it cannot overwrite
@@ -2134,6 +2137,8 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch bugfix/r3.11-pseudo-call-arg-followups
 - [x] In pseudo-C, keep argument loads before writes that may change them when the width is unknown, the frame slot is indexed, the segments differ, the instruction is not modelled or the load reads a literal, and stop a Win64 outgoing stack argument folding after a write to its slot (#2119 follow-up).
       — claimed: Plastic-time, branch bugfix/r3.11-pseudo-memory-write-overlap
+- [x] Preserve argument loads across implicit and multi-register writes, and limit fixed-width Win64 slot invalidation to overlapping offsets (#2124 follow-up).
+      — claimed: Plastic-time, branch bugfix/r3.11-pseudo-write-footprints
 - [ ] `native_source_folder_write` uses the built-in decompiler only: use Ghidra in Deep mode when
       it's there
 - [x] Keep source registers alive when an AArch64 arithmetic result is discarded into the zero register.

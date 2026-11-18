@@ -1339,6 +1339,7 @@ version = "0.6.1"
 dependencies = [
  "bzip2-rs",
  "craft-anything-testkit",
+ "craft-dex",
  "craft-elf",
  "craft-evm",
  "craft-har",
@@ -1504,6 +1505,15 @@ dependencies = [
 name = "craft-codepage"
 version = "0.1.0"
 source = "git+https://github.com/storytold/craft-libs?rev=d118983bf922ac96c68b885dc55da30435adbc7d#d118983bf922ac96c68b885dc55da30435adbc7d"
+
+[[package]]
+name = "craft-dex"
+version = "0.1.0"
+source = "git+https://github.com/storytold/craft-libs?rev=c93a6057fe722107d6b465b3a0daead58ef3a439#c93a6057fe722107d6b465b3a0daead58ef3a439"
+dependencies = [
+ "serde",
+ "thiserror 2.0.21",
+]
 
 [[package]]
 name = "craft-elf"
