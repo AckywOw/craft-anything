@@ -1528,6 +1528,10 @@ Gaps found while using the app for real projects.
       one-pass fill now lives in `platform::text::fill` (L2), which both the steps and
       `i18n::trf` use, so the editor's path reaches the builder as it is
       — claimed: mansur-akhmadi, branch bugfix/r2.9-stack-steps-literal-values
+- [ ] The plugin form splits its arguments on spaces, so a JSON array pasted from another client's
+      configuration becomes arguments with brackets, quotes and commas in them (#2153): take a
+      pasted JSON array of strings as the arguments
+      — claimed: bflatastic, branch bugfix/plugin-args-json-array
 - [x] Each project chooses, per kind of action, what the builder's approvals get (allow, ask or
       refuse): reading the web, commands, files outside the project, pushing and publishing,
       deleting outside the project, system changes, other tools. Unset kinds follow Auto mode as
