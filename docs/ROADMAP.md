@@ -550,8 +550,9 @@ been run live.
       Not run against a live provider — claimed: justinjohn0306, branch `feature/r5.4-requests-per-minute`
 - [x] Offer `requests_per_minute` in Settings → AI and `ai request-rate` (#668)
       — PR #1841; claimed: rudycelekli, branch feature/r5.4-request-rate-setting
-- [ ] Say in the feed when a build is waiting for its turn (#668); a tokens-per-minute limit
-      isn't covered either
+- [x] Say in the feed when a build is waiting for its turn (#668)
+      — claimed: justinjohn0306, branch feature/r5.4-say-when-a-request-waits
+- [ ] A tokens-per-minute limit isn't covered by the request pacing (#668)
 - [x] Find LM Studio on another port (#73): the port in its settings file (when it is there) and
       the ports 1235-1239 are probed like the usual servers; OpenCode's own `baseURL`s were already
       read (#83)
@@ -1232,7 +1233,12 @@ Owner: open · Status: in progress
       path, not `-z`'s one-shot run, so check what it prints and approves before moving to it.
       For the others, find in their source whether they read a message from stdin or a file
 - [ ] A note sent during a build reaches the builder at its next step on other coding agents with
-      tool hooks, and on the API-backend loop between tool calls (Claude Code only today)
+      tool hooks (Claude Code only today)
+- [x] A note sent during a build reaches an API-backend builder between tool calls, not only after
+      its turn: after each tool step the loop claims the waiting notes and adds them after the
+      results (`LoopConfig::notes`, the hook's own wording), and the build relays them to the feed
+      as read (`a_note_reaches_an_api_builder_between_tool_calls`)
+      — claimed: justinjohn0306, branch feature/r2.2-notes-between-api-tool-calls
 - [ ] Session copies for other agents that keep sessions (ACP agents' `session/load`) (#451)
 - [x] Hermes Agent's native Windows install (`%LOCALAPPDATA%\hermes\bin`) is searched, so an app
       started before the install, or by a launcher, finds it (#116)
@@ -2309,6 +2315,23 @@ Owner: open · Status: in progress
       subfolders read "0 files in 100 entries". Folders, links and files are now one list in path
       order before the cut, and no file after the cut is read
       — claimed: hichang4u, branch bugfix/r3.11-inventory-path-order
+- [x] That path order was only the order of what the walk kept: the walk listed a folder's files
+      before opening its subfolders, so when the file limit stopped it, a file inside an earlier
+      folder (`a/first.txt`) was dropped while later root files (`z1.txt`…) were kept, and sorting
+      couldn't bring it back (CodeRabbit on #2072). The walk now opens a folder where its name sorts
+      in its parent, so a limit that stops the walk (files, entries, path bytes) cuts the tree where
+      a listing of it would end, and results are sorted folder by folder (`path_order`: everything in
+      `a` before `a-b.txt`). Only the listings of the folders on the current path are held, within
+      the same entry limit. Two limits leave a gap rather than an end: a folder past `max_depth` is
+      skipped (the walk is marked cut short) and later entries are still listed; and where a
+      folder's own listing is cut by the entry or path-byte limit, the names kept are the ones the
+      system returned first, which only NTFS returns in name order
+      — claimed: hichang4u, branch bugfix/r3.11-walk-path-order
+- [ ] A walk names entries by `to_string_lossy`, so on Unix two folders whose raw names differ only
+      in bytes that aren't UTF-8 (`a\x80`, `a\x81`) both read as `a�`: they are walked as two
+      folders but sorted as one path, so a cut walk can keep a later file and drop an earlier one
+      (CodeRabbit on #2101). Order by the raw name, or report a name that can't be shown
+      unambiguously as unlisted
 
 ### R3.12 Format parser correctness
 Owner: open · Status: in progress
@@ -2499,6 +2522,17 @@ Owner: open · Status: in progress
       — claimed: Chr0mium24, branch bugfix/r3.12-sqlite-real-affinity
 - [x] Tokenize tight SQLite `CREATE TABLE` identifiers, declared type spans, adjacent column constraints, signed or leading-dot `DEFAULT` clauses (`DEFAULT-5`, `DEFAULT.5`), and semicolon-terminated table options (`STRICT;`, `WITHOUT ROWID;`) without whitespace (#2108). — claimed: Plastic-time, branch bugfix/r3.12-sqlite-tight-type-and-clause-tokens
 - [x] Read `DEFAULT+X'41'` as the blob, and bare `DEFAULT` words with non-ASCII characters or a later `$` as their text, as SQLite does for rows written before the column was added, and skip a byte order mark where a token starts; the `--` after `e` fixture is DDL SQLite creates (#2108 follow-up). — claimed: Plastic-time, branch bugfix/r3.12-sqlite-default-followups
+- [x] A SQLite schema whose `sqlite_schema` b-tree couldn't be read whole (an unreadable child
+      page or row, a page of the wrong kind, a walk budget spent) was listed as complete: the
+      overview dropped the walk's `incomplete` flag and notes. `schema_truncated` is now set for
+      such a walk as well as for the object cap, its first notes are in the integrity notes, and
+      `db_sqlite_show` adds a `schema_incomplete` limitation, partial coverage, and an unknown-table
+      error that says only the listed part was searched
+      — claimed: mansur-akhmadi, branch bugfix/r3.12-sqlite-schema-incomplete
+- [x] Schema rows read only in part (cut or looping overflow chains, unread values, or text cut
+      at a per-value or aggregate schema budget) set `schema_truncated` and report how many
+      records have incomplete metadata or column lists. Display-only SQL shortening stays separate
+      — claimed: Afloat16, branch bugfix/r3.12-sqlite-partial-schema-20261119
 - [x] Require a complete DNS question's type and class fields before retaining it, and keep
       truncated questions out of packet inventories while reporting the incomplete message
       — claimed: Afloat16, branch bugfix/r3.12-dns-question-class-review-20261104
@@ -3048,6 +3082,16 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch bugfix/r3.12-squashfs-table-bounds
 - [x] Require each raw or decoded file block to cover exactly its logical range, including the partial final block, so short blocks cannot shift later contents and long blocks cannot be hidden by truncation.
       — claimed: Afloat16, branch bugfix/r3.12-squashfs-block-output-size-20261110
+- [x] The firmware scan gave a squashfs 2.x or 3.x region the block size read at offset 12, which
+      is the uid table's start in those versions (`block_size` is there only in version 4): it
+      reads the 32-bit `block_size` they keep at offset 51, in either byte order, and leaves it
+      out of a superblock cut before it. Their description no longer names a compression read
+      from offset 20 (their inode table's start): it says unknown, as their details did
+      — claimed: mansur-akhmadi, branch bugfix/r3.12-squashfs-v3-block-size
+- [x] A squashfs 2.x or 3.x superblock is taken on its magic, version and `bytes_used` alone: check
+      its block size against its `block_log` (offset 34) as version 4's is, before calling it a
+      filesystem
+      — claimed: Afloat16, branch bugfix/r3.12-old-squashfs-block-layout-20261119
 - [x] Recover zero-filled cramfs hole blocks at full and partial page boundaries while retaining the existing recovery budgets.
       — claimed: Afloat16, branch bugfix/r3.12-cramfs-hole-blocks-20261110
 - [x] Charge firmware ZIP outputs before decoding the next member, so byte and file limits bound retained member data.
