@@ -20,6 +20,8 @@ const XML_RESOURCE_MAP: u16 = 0x0180;
 const MAX_STRINGS: usize = 1_000_000;
 /// Longest string kept (characters).
 const MAX_STRING: usize = 64 * 1024;
+/// Base budget for decoded string bytes; larger chunks allow at most three times their size.
+const BASE_POOL_BYTES: usize = 64 << 20;
 /// Most extra UTF-8 length candidates examined across one string pool.
 const MAX_RECOVERY_PROBES: usize = 65_536;
 /// Most XML nodes decoded.
@@ -57,7 +59,7 @@ impl StringPool {
         self.strings.get(i as usize).map(String::as_str)
     }
 
-    /// Parse the pool whose chunk starts at `off`.
+    /// Parse the pool whose chunk starts at `off`, retaining a prefix within the string and byte budgets.
     pub fn parse(data: &[u8], off: usize) -> Result<StringPool, FormatError> {
         let mut recovery_left = MAX_RECOVERY_PROBES;
         Self::parse_with_recovery_budget(data, off, &mut recovery_left)
@@ -94,6 +96,7 @@ impl StringPool {
         let string_bytes = r.slice(strings_start, end - strings_start).ok_or_else(|| FormatError::Truncated("string data".into()))?;
         let strings_reader = Reader::new(string_bytes);
         let mut strings = Vec::with_capacity(count.min(MAX_STRINGS).min(65_536));
+        let mut bytes_left = BASE_POOL_BYTES.max(size.saturating_mul(3));
         for i in 0..count.min(MAX_STRINGS) {
             let at = r.u32_le(hdr + i * 4).ok_or_else(|| FormatError::Truncated("string offsets".into()))? as usize;
             let s = if at >= string_bytes.len() {
@@ -103,7 +106,12 @@ impl StringPool {
             } else {
                 utf16_string(&strings_reader, at, string_bytes.len())
             };
-            strings.push(s.unwrap_or_default());
+            let s = s.unwrap_or_default();
+            if s.len() > bytes_left {
+                break;
+            }
+            bytes_left -= s.len();
+            strings.push(s);
         }
         Ok(StringPool { strings, utf8, declared: count })
     }
@@ -329,7 +337,13 @@ pub fn parse(data: &[u8]) -> Result<Document, FormatError> {
         }
         match ct {
             RES_STRING_POOL => match StringPool::parse(data, pos) {
-                Ok(p) => doc.pool = p,
+                Ok(p) => {
+                    if p.strings.len() < p.declared {
+                        doc.truncated = true;
+                        doc.warnings.push(format!("string pool was capped at {} of {} strings", p.strings.len(), p.declared));
+                    }
+                    doc.pool = p;
+                }
                 Err(e) => doc.warnings.push(format!("string pool: {e}")),
             },
             XML_RESOURCE_MAP => {
@@ -564,11 +578,16 @@ fn sval(attrs: &[Attribute], name: &str) -> Option<String> {
     attr(attrs, name).map(|a| a.value.clone())
 }
 
+/// Read a boolean attribute, accepting both `TYPE_INT_BOOLEAN` (`0x12`) and integer-typed
+/// `Res_value` encodings (`0x10..=0x1f`, non-zero = `true`) as Android's `ResTable` does.
 fn bval(attrs: &[Attribute], name: &str) -> Option<bool> {
-    attr(attrs, name).and_then(|a| match a.value.as_str() {
-        "true" => Some(true),
-        "false" => Some(false),
-        _ => None,
+    attr(attrs, name).and_then(|a| match a.raw.data_type {
+        0x10..=0x1f => Some(a.raw.data != 0),
+        _ => match a.value.as_str() {
+            "true" => Some(true),
+            "false" => Some(false),
+            _ => None,
+        },
     })
 }
 
@@ -583,6 +602,7 @@ fn qualify(package: &Option<String>, name: &str) -> String {
 /// Facts from a decoded `AndroidManifest.xml`.
 pub fn manifest(doc: &Document) -> Manifest {
     let mut m = Manifest::default();
+    let mut target_level = None;
     let mut stack: Vec<String> = Vec::new();
     let mut current: Option<Component> = None;
     let mut filter: Option<IntentFilter> = None;
@@ -592,16 +612,23 @@ pub fn manifest(doc: &Document) -> Manifest {
                 let parent = stack.last().map(String::as_str).unwrap_or("");
                 match (parent, name.as_str()) {
                     (_, "manifest") => {
-                        m.package = a.iter().find(|x| x.name == "package").map(|x| x.value.clone());
+                        m.package = a.iter().find(|x| x.name == "package" && x.namespace.is_none()).map(|x| x.value.clone());
                         m.version_code = sval(a, "versionCode");
                         m.version_name = sval(a, "versionName");
                     }
                     ("manifest", "uses-sdk") => {
-                        m.min_sdk = sval(a, "minSdkVersion");
-                        m.target_sdk = sval(a, "targetSdkVersion");
+                        let min = attr(a, "minSdkVersion");
+                        let target = attr(a, "targetSdkVersion");
+                        m.min_sdk = min.map(|sdk| sdk.value.clone());
+                        m.target_sdk = target.map(|sdk| sdk.value.clone());
                         m.max_sdk = sval(a, "maxSdkVersion");
+                        // Use the minimum when the target is omitted. Read typed integers before formatting.
+                        target_level = target.or(min).and_then(|sdk| match sdk.raw.data_type {
+                            0x10 | 0x11 => u32::try_from(sdk.raw.data as i32).ok(),
+                            _ => sdk.value.parse().ok(),
+                        });
                     }
-                    ("manifest", "uses-permission" | "uses-permission-sdk-23") => {
+                    ("manifest", "uses-permission" | "uses-permission-sdk-23" | "uses-permission-sdk-m") => {
                         if let Some(p) = sval(a, "name")
                             && m.uses_permissions.len() < 4096
                         {
@@ -708,10 +735,10 @@ pub fn manifest(doc: &Document) -> Manifest {
             _ => {}
         }
     }
-    let target: Option<u32> = m.target_sdk.as_deref().and_then(|s| s.parse().ok());
     for c in &mut m.components {
         // Providers were exported by default up to API 16, intent filters or not.
-        let implied = if c.kind == "provider" { target.is_none_or(|t| t <= 16) } else { !c.intent_filters.is_empty() && target.is_none_or(|t| t < 31) };
+        let implied =
+            if c.kind == "provider" { target_level.is_none_or(|t| t <= 16) } else { !c.intent_filters.is_empty() && target_level.is_none_or(|t| t < 31) };
         c.exported = c.exported_attribute.unwrap_or(implied);
     }
     m
@@ -749,6 +776,82 @@ mod tests {
         data.resize(data.len() + len, b'x');
         data.push(0);
         offset
+    }
+
+    fn shared_ascii_pool(utf8: bool, count: usize) -> Vec<u8> {
+        let len = 16_384usize;
+        let mut strings = Vec::new();
+        if utf8 {
+            append_legacy_ascii(&mut strings, len);
+        } else {
+            strings.extend_from_slice(&(len as u16).to_le_bytes());
+            for _ in 0..len {
+                strings.extend_from_slice(b"x\0");
+            }
+            strings.extend_from_slice(&[0, 0]);
+        }
+        let mut data = pool_with_offsets(&vec![0; count], &strings);
+        if !utf8 {
+            data[16..20].fill(0);
+        }
+        data
+    }
+
+    #[test]
+    fn shared_offsets_spend_a_pool_byte_budget() {
+        for utf8 in [true, false] {
+            let mut data = shared_ascii_pool(utf8, 8192);
+            for appended in [false, true] {
+                if appended {
+                    // Unrelated bytes after the chunk cannot buy more retained copies.
+                    data.resize(24 << 20, 0);
+                }
+                let pool = StringPool::parse(&data, 0).unwrap();
+                assert_eq!(pool.declared, 8192);
+                assert_eq!(pool.strings.len(), 4096);
+                assert_eq!(pool.strings.iter().map(String::len).sum::<usize>(), 64 << 20);
+                assert_eq!(pool.get(4095).map(str::len), Some(16_384));
+                assert_eq!(pool.get(4096), None);
+            }
+            let data = shared_ascii_pool(utf8, 2);
+            let pool = StringPool::parse(&data, 0).unwrap();
+            assert_eq!(pool.strings.len(), 2);
+            assert_eq!(pool.get(0), pool.get(1));
+        }
+    }
+
+    fn pool_container(kind: u16, header: usize, children: &[u8]) -> Vec<u8> {
+        let mut data = vec![0; header];
+        data[0..2].copy_from_slice(&kind.to_le_bytes());
+        data[2..4].copy_from_slice(&(header as u16).to_le_bytes());
+        data.extend_from_slice(children);
+        let len = data.len() as u32;
+        data[4..8].copy_from_slice(&len.to_le_bytes());
+        data
+    }
+
+    #[test]
+    fn xml_and_resource_tables_disclose_partial_string_pools() {
+        let pool = shared_ascii_pool(true, 8192);
+        {
+            let doc = parse(&pool_container(RES_XML, 8, &pool)).unwrap();
+            assert!(doc.truncated);
+            assert!(doc.warnings.iter().any(|w| w.contains("string pool") && w.contains("4096 of 8192")));
+            assert_eq!(doc.pool.strings.len(), 4096);
+        }
+        let table = crate::arsc::parse(&pool_container(2, 12, &pool), crate::arsc::Limits::default()).unwrap();
+        assert!(table.truncated);
+        assert_eq!(table.global_strings, 8192);
+        assert!(table.warnings.iter().any(|w| w.contains("global string pool") && w.contains("4096 of 8192")));
+        for (field, label) in [(268, "type"), (276, "key")] {
+            let mut package = pool_container(0x0200, 288, &pool);
+            package[8..12].copy_from_slice(&0x7fu32.to_le_bytes());
+            package[field..field + 4].copy_from_slice(&288u32.to_le_bytes());
+            let table = crate::arsc::parse(&pool_container(2, 12, &package), crate::arsc::Limits::default()).unwrap();
+            assert!(table.truncated, "{label}");
+            assert!(table.warnings.iter().any(|w| w.contains(&format!("{label} string pool")) && w.contains("4096 of 8192")));
+            assert_eq!(table.packages.len(), 1);
+        }
     }
 
     #[test]
