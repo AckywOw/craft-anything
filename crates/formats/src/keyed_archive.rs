@@ -68,11 +68,11 @@ pub fn uid_of(v: &Value) -> Option<u64> {
     }
 }
 
-fn kind_of(v: &Value) -> &'static str {
+fn kind_of(v: &Value, index: usize) -> &'static str {
     match v {
         Value::Dict(_) => "object",
         Value::Array(_) => "array",
-        Value::String(s) if s == "$null" => "null",
+        Value::String(s) if index == 0 && s == "$null" => "null",
         Value::String(_) => "string",
         Value::Integer(_) => "integer",
         Value::Real(_) => "real",
@@ -120,7 +120,7 @@ impl KeyedArchive {
                     Value::Dict(d) if uid_of(o).is_none() => d.iter().map(|(k, _)| k.clone()).collect(),
                     _ => Vec::new(),
                 };
-                let kind = if uid_of(o).is_some() { "uid" } else { kind_of(o) };
+                let kind = if uid_of(o).is_some() { "uid" } else { kind_of(o, i) };
                 ObjectRow { index: i, class: self.class_of(i as u64), kind, keys, references }
             })
             .collect()
@@ -163,13 +163,26 @@ struct Projector<'a> {
     bytes_left: usize,
 }
 
-impl Projector<'_> {
+impl<'a> Projector<'a> {
     fn spend(&mut self, n: usize) -> bool {
         if let Some(left) = self.bytes_left.checked_sub(n) {
             self.bytes_left = left;
             return true;
         }
         false
+    }
+
+    /// Follow up to 16 UID aliases to a target value in `$objects`.
+    fn resolve_scalar(&mut self, mut v: &'a Value) -> Option<&'a Value> {
+        for _ in 0..16 {
+            let Some(u) = uid_of(v) else { return Some(v) };
+            self.nodes += 1;
+            if self.nodes > MAX_PROJECT_NODES {
+                return None;
+            }
+            v = self.a.object(u)?;
+        }
+        uid_of(v).is_none().then_some(v)
     }
 
     fn reference(&mut self, idx: u64, why: &str) -> Json {
@@ -208,7 +221,7 @@ impl Projector<'_> {
             return json!({"$ref": idx, "$note": "missing object"});
         };
         match obj {
-            Value::String(s) if s == "$null" => return Json::Null,
+            Value::String(s) if idx == 0 && s == "$null" => return Json::Null,
             Value::Dict(_) | Value::Array(_) | Value::Uid(_) => {}
             other => {
                 let copied = match other {
@@ -261,8 +274,17 @@ impl Projector<'_> {
                 if let Some(s) = obj.get("NS.string") {
                     return self.value(s, depth);
                 }
-                if let Some(Value::Data(b)) = obj.get("NS.bytes") {
-                    return json!(String::from_utf8_lossy(b));
+                if let Some(raw) = obj.get("NS.bytes")
+                    && let Some(Value::Data(b)) = self.resolve_scalar(raw)
+                {
+                    if !self.spend(b.len()) {
+                        return self.reference(idx, "projection byte limit");
+                    }
+                    let decoded = String::from_utf8_lossy(b);
+                    if !self.spend(decoded.len().saturating_sub(b.len())) {
+                        return self.reference(idx, "projection byte limit");
+                    }
+                    return Json::String(decoded.into_owned());
                 }
             }
             "NSData" | "NSMutableData" => {
@@ -271,8 +293,12 @@ impl Projector<'_> {
                 }
             }
             "NSDate" => {
-                if let Some(Value::Real(t)) = obj.get("NS.time") {
-                    return json!({"$date": plist::apple_date_iso(*t)});
+                if let Some(raw) = obj.get("NS.time") {
+                    match self.resolve_scalar(raw) {
+                        Some(Value::Real(t)) => return json!({"$date": plist::apple_date_iso(*t)}),
+                        Some(Value::Integer(i)) => return json!({"$date": plist::apple_date_int_iso(*i)}),
+                        _ => {}
+                    }
                 }
             }
             _ => {}

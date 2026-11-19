@@ -46,145 +46,19 @@ impl TableTextBudget {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct PeSection {
-    pub name: String,
-    pub virtual_size: u32,
-    pub rva: u32,
-    pub raw_size: u32,
-    pub raw_offset: u32,
-    pub characteristics: u32,
-}
+pub use craft_pe::{PeHeaders, PeSection, has_pe_header, rich_header, subsystem_name};
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PeHeaders {
-    pub pe_offset: usize,
-    pub machine: u16,
-    pub timestamp: u32,
-    pub characteristics: u16,
-    pub pe32_plus: bool,
-    pub image_base: u64,
-    pub entry_rva: u32,
-    pub size_of_headers: u32,
-    pub subsystem: u16,
-    pub dll_characteristics: u16,
-    pub linker: (u8, u8),
-    pub data_dirs: Vec<(u32, u32)>,
-    pub sections: Vec<PeSection>,
-}
-
-impl PeHeaders {
-    /// RVA → file offset through the section table (headers map 1:1).
-    pub fn rva_to_offset(&self, rva: u32) -> Option<usize> {
-        for s in &self.sections {
-            let size = s.virtual_size.max(s.raw_size);
-            if rva >= s.rva && rva - s.rva < size {
-                let delta = rva - s.rva;
-                if delta >= s.raw_size {
-                    return None;
-                }
-                return usize::try_from(s.raw_offset.checked_add(delta)?).ok();
-            }
-        }
-        if rva < self.size_of_headers { usize::try_from(rva).ok() } else { None }
-    }
-
-    fn image_va(&self, rva: u64) -> Option<u64> {
-        let rva = u32::try_from(rva).ok()?;
-        let address = self.image_base.checked_add(u64::from(rva))?;
-        (self.pe32_plus || address <= u64::from(u32::MAX)).then_some(address)
-    }
-
-    pub fn dir(&self, i: usize) -> Option<(u32, u32)> {
-        self.data_dirs.get(i).copied().filter(|(rva, size)| *rva != 0 && *size != 0)
-    }
-}
-
-/// True when bytes start with MZ and point at a `PE\0\0` signature.
-pub fn has_pe_header(data: &[u8]) -> bool {
-    let r = Reader::new(data);
-    r.u32_le(0x3c).and_then(|o| r.slice(o as usize, 4)) == Some(b"PE\0\0")
-}
-
-/// Parse the DOS stub pointer, COFF header, optional header and section table.
+/// Read PE headers while preserving the app error contract.
 pub fn headers(data: &[u8]) -> Result<PeHeaders, FormatError> {
-    let r = Reader::new(data);
-    if !data.starts_with(b"MZ") {
-        return Err(FormatError::Malformed("no MZ signature".into()));
-    }
-    let pe = r.u32_le(0x3c).ok_or_else(|| FormatError::Truncated("DOS header".into()))? as usize;
-    if r.slice(pe, 4) != Some(b"PE\0\0") {
-        return Err(FormatError::Malformed("no PE signature".into()));
-    }
-    let coff = pe + 4;
-    let t = |o: Option<u16>| o.ok_or_else(|| FormatError::Truncated("COFF header".into()));
-    let machine = t(r.u16_le(coff))?;
-    let nsections = usize::from(t(r.u16_le(coff + 2))?);
-    let timestamp = r.u32_le(coff + 4).unwrap_or(0);
-    let opt_size = usize::from(t(r.u16_le(coff + 16))?);
-    let characteristics = t(r.u16_le(coff + 18))?;
-    let opt = coff + 20;
-    let optional = Reader::new(r.slice(opt, opt_size).ok_or_else(|| FormatError::Truncated("optional header".into()))?);
-    let magic = optional.u16_le(0).ok_or_else(|| FormatError::Truncated("optional header".into()))?;
-    let pe32_plus = match magic {
-        0x20b => true,
-        0x10b => false,
-        m => return Err(FormatError::Malformed(format!("optional header magic {m:#x}"))),
-    };
-    let (dd, count_off) = if pe32_plus { (112, 108) } else { (96, 92) };
-    if opt_size < dd {
-        return Err(FormatError::Truncated("fixed optional header fields".into()));
-    }
-    let image_base = if pe32_plus { optional.u64_le(24) } else { optional.u32_le(28).map(u64::from) }.unwrap_or(0);
-    let count = (optional.u32_le(count_off).unwrap_or(0) as usize).min(16).min((opt_size - dd) / 8);
-    let data_dirs = (0..count).map(|i| (optional.u32_le(dd + i * 8).unwrap_or(0), optional.u32_le(dd + i * 8 + 4).unwrap_or(0))).collect();
-    let sh = opt + opt_size;
-    let mut sections = Vec::new();
-    for i in 0..nsections.min(96) {
-        let o = sh + i * 40;
-        let Some(name) = r.slice(o, 8) else { break };
-        let name = String::from_utf8_lossy(name.split(|&c| c == 0).next().unwrap_or(&[])).into_owned();
-        sections.push(PeSection {
-            name,
-            virtual_size: r.u32_le(o + 8).unwrap_or(0),
-            rva: r.u32_le(o + 12).unwrap_or(0),
-            raw_size: r.u32_le(o + 16).unwrap_or(0),
-            raw_offset: r.u32_le(o + 20).unwrap_or(0),
-            characteristics: r.u32_le(o + 36).unwrap_or(0),
-        });
-    }
-    Ok(PeHeaders {
-        pe_offset: pe,
-        machine,
-        timestamp,
-        characteristics,
-        pe32_plus,
-        image_base,
-        entry_rva: optional.u32_le(16).unwrap_or(0),
-        size_of_headers: optional.u32_le(60).unwrap_or(0),
-        subsystem: optional.u16_le(68).unwrap_or(0),
-        dll_characteristics: optional.u16_le(70).unwrap_or(0),
-        linker: (optional.u8(2).unwrap_or(0), optional.u8(3).unwrap_or(0)),
-        data_dirs,
-        sections,
+    craft_pe::headers(data).map_err(|error| match error {
+        craft_pe::PeError::Truncated(context) => FormatError::Truncated(context.into()),
+        craft_pe::PeError::Malformed(context) => FormatError::Malformed(context),
     })
 }
 
-pub fn subsystem_name(s: u16) -> &'static str {
-    match s {
-        1 => "native",
-        2 => "windows-gui",
-        3 => "windows-console",
-        7 => "posix-console",
-        9 => "windows-ce",
-        10 => "efi-application",
-        11 => "efi-boot-driver",
-        12 => "efi-runtime-driver",
-        14 => "xbox",
-        16 => "windows-boot",
-        _ => "unknown",
-    }
-}
+#[cfg(test)]
+#[path = "pe_legacy.rs"]
+mod legacy;
 
 const DIR_NAMES: [&str; 16] = [
     "export",
@@ -272,7 +146,7 @@ pub struct BoundModule {
 pub struct ImportTable {
     pub rows: Vec<ImportRow>,
     pub bound_modules: Vec<BoundModule>,
-    /// A cap stopped the walk: more rows may exist.
+    /// A cap or incomplete directory stopped the walk: more rows may exist.
     pub truncated: bool,
     pub warnings: Vec<String>,
 }
@@ -293,26 +167,56 @@ fn thunk_target(r: &Reader<'_>, h: &PeHeaders, v: u64, name_rva: impl Fn(u64) ->
     (name, hint, None)
 }
 
+fn mapped_import_directory<'a>(data: &'a [u8], h: &PeHeaders, rva: u32, size: u32, label: &str, out: &mut ImportTable) -> Option<Reader<'a>> {
+    let Some((start, mapped)) = h.rva_to_offset(rva).zip(h.rva_file_len(rva)) else {
+        out.truncated = true;
+        out.warnings.push(format!("the {label} directory at RVA {rva:#x} is outside the file"));
+        return None;
+    };
+    let available = data.get(start..).unwrap_or_default();
+    let len = mapped.min(available.len());
+    if len < size as usize {
+        out.truncated = true;
+        out.warnings.push(format!("the {label} directory extends beyond its mapped file bytes"));
+    }
+    Some(Reader::new(available.get(..len).unwrap_or_default()))
+}
+
+fn import_directory<'a>(data: &'a [u8], h: &PeHeaders, index: usize, label: &str, out: &mut ImportTable) -> Option<Reader<'a>> {
+    let (rva, size) = h.dir(index)?;
+    let mapped = mapped_import_directory(data, h, rva, size, label, out)?;
+    Some(Reader::new(mapped.slice(0, mapped.len().min(size as usize))?))
+}
+
 fn normal_imports(data: &[u8], h: &PeHeaders, out: &mut ImportTable, budget: &mut TableTextBudget) {
     if budget.exhausted {
         return;
     }
     let r = Reader::new(data);
-    let Some((rva, _)) = h.dir(1) else { return };
-    let Some(start) = h.rva_to_offset(rva) else {
-        out.warnings.push(format!("the import directory at RVA {rva:#x} is outside the file"));
-        return;
-    };
+    let Some((rva, size)) = h.data_dirs.get(1).copied().filter(|(rva, _)| *rva != 0) else { return };
+    let Some(directory) = mapped_import_directory(data, h, rva, size, "import", out) else { return };
     let thunk_size = if h.pe32_plus { 8usize } else { 4 };
+    let mut warned_size = false;
     for d in 0..MAX_IMPORT_DESCRIPTORS {
-        let Some(desc) = d.checked_mul(20).and_then(|o| start.checked_add(o)) else { break };
+        let desc = d * 20;
+        if directory.slice(desc, 20).is_none() {
+            out.truncated = true;
+            out.warnings.push("the import descriptor table ends before a complete terminator".into());
+            return;
+        }
+        // Windows follows descriptors to their terminator even when Size is zero or too short.
+        // The selected file mapping remains the hard boundary; Size is diagnostic only.
+        if desc + 20 > size as usize && !warned_size {
+            out.warnings.push("the import descriptor table extends beyond its declared size".into());
+            warned_size = true;
+        }
         let (Some(oft), Some(stamp), Some(name_rva), Some(ft)) =
-            (r.u32_le(desc), r.u32_le(desc.saturating_add(4)), r.u32_le(desc.saturating_add(12)), r.u32_le(desc.saturating_add(16)))
+            (directory.u32_le(desc), directory.u32_le(desc + 4), directory.u32_le(desc + 12), directory.u32_le(desc + 16))
         else {
             break;
         };
         if oft == 0 && name_rva == 0 && ft == 0 {
-            break;
+            return;
         }
         let library = h.rva_to_offset(name_rva).and_then(|o| r.cstr(o, 256)).unwrap_or_default();
         let bound = stamp != 0;
@@ -341,6 +245,8 @@ fn normal_imports(data: &[u8], h: &PeHeaders, out: &mut ImportTable, budget: &mu
             out.rows.push(ImportRow { library: library.clone(), kind: ImportKind::Normal, name, ordinal, hint, slot_va, bound });
         }
     }
+    out.truncated = true;
+    out.warnings.push(format!("only the first {MAX_IMPORT_DESCRIPTORS} import descriptors were read"));
 }
 
 /// An RVA held in a delay-load descriptor: old linkers wrote virtual addresses instead.
@@ -353,21 +259,22 @@ fn delay_imports(data: &[u8], h: &PeHeaders, out: &mut ImportTable, budget: &mut
         return;
     }
     let r = Reader::new(data);
-    let Some((rva, _)) = h.dir(13) else { return };
-    let Some(start) = h.rva_to_offset(rva) else {
-        out.warnings.push(format!("the delay-load directory at RVA {rva:#x} is outside the file"));
-        return;
-    };
+    let Some(directory) = import_directory(data, h, 13, "delay-load", out) else { return };
     let thunk_size = if h.pe32_plus { 8usize } else { 4 };
     for d in 0..MAX_IMPORT_DESCRIPTORS {
-        let Some(desc) = d.checked_mul(32).and_then(|o| start.checked_add(o)) else { break };
+        let desc = d * 32;
+        if directory.slice(desc, 32).is_none() {
+            out.truncated = true;
+            out.warnings.push("the delay-load descriptor table ends before a complete terminator".into());
+            return;
+        }
         let (Some(attrs), Some(name_f), Some(iat_f), Some(int_f)) =
-            (r.u32_le(desc), r.u32_le(desc.saturating_add(4)), r.u32_le(desc.saturating_add(12)), r.u32_le(desc.saturating_add(16)))
+            (directory.u32_le(desc), directory.u32_le(desc + 4), directory.u32_le(desc + 12), directory.u32_le(desc + 16))
         else {
             break;
         };
         if name_f == 0 && iat_f == 0 && int_f == 0 {
-            break;
+            return;
         }
         let rva_based = attrs & 1 != 0;
         let conv = |f: u32| delay_rva(f, rva_based, h.image_base);
@@ -397,47 +304,73 @@ fn delay_imports(data: &[u8], h: &PeHeaders, out: &mut ImportTable, budget: &mut
             out.rows.push(ImportRow { library: library.clone(), kind: ImportKind::Delay, name, ordinal, hint, slot_va, bound: false });
         }
     }
+    out.truncated = true;
+    out.warnings.push(format!("only the first {MAX_IMPORT_DESCRIPTORS} delay-load descriptors were read"));
 }
 
 fn bound_modules(data: &[u8], h: &PeHeaders, out: &mut ImportTable, budget: &mut TableTextBudget) {
     if budget.exhausted {
         return;
     }
-    let r = Reader::new(data);
-    let Some((rva, size)) = h.dir(11) else { return };
-    let Some(start) = h.rva_to_offset(rva) else {
-        out.warnings.push(format!("the bound import directory at RVA {rva:#x} is outside the file"));
-        return;
-    };
-    let size = size as usize;
+    let Some(directory) = import_directory(data, h, 11, "bound import", out) else { return };
     let mut pos = 0usize;
-    while pos < size && out.bound_modules.len() < MAX_IMPORT_DESCRIPTORS {
-        let Some(at) = start.checked_add(pos) else { break };
-        let (Some(stamp), Some(name_off), Some(refs)) = (r.u32_le(at), r.u16_le(at.saturating_add(4)), r.u16_le(at.saturating_add(6))) else { break };
-        if stamp == 0 && name_off == 0 {
-            break;
-        }
-        let name_of = |o: u16| start.checked_add(usize::from(o)).and_then(|p| r.cstr(p, 256)).unwrap_or_default();
-        let name = name_of(name_off);
-        if !budget.take(name.len()) {
+    while out.bound_modules.len() < MAX_IMPORT_DESCRIPTORS {
+        if directory.slice(pos, 8).is_none() {
+            out.truncated = true;
+            out.warnings.push("the bound import table ends before a complete terminator".into());
             return;
         }
-        let mut forwarders = Vec::new();
-        for i in 0..usize::from(refs) {
-            let Some(f) = (i + 1).checked_mul(8).and_then(|o| at.checked_add(o)) else { break };
-            let Some(o) = r.u16_le(f.saturating_add(4)) else { break };
-            let forwarder = name_of(o);
-            if !budget.take(forwarder.len()) {
-                break;
-            }
-            forwarders.push(forwarder);
+        let (Some(stamp), Some(name_off), Some(refs)) = (directory.u32_le(pos), directory.u16_le(pos + 4), directory.u16_le(pos + 6)) else { return };
+        if stamp == 0 && name_off == 0 {
+            return;
         }
-        out.bound_modules.push(BoundModule { name, timestamp: stamp, forwarders });
+        let name_of = |offset: u16| {
+            let offset = usize::from(offset);
+            let bytes = directory.slice(offset, directory.len().checked_sub(offset)?.min(256))?;
+            let end = bytes.iter().position(|&byte| byte == 0)?;
+            Some(String::from_utf8_lossy(bytes.get(..end)?).into_owned())
+        };
+        let name = name_of(name_off);
+        if name.is_none() {
+            out.truncated = true;
+            out.warnings.push("a bound import name is outside its directory".into());
+        }
+        if !budget.take(name.as_ref().map_or(0, String::len)) {
+            return;
+        }
+        let refs_start = pos + 8;
+        let complete = directory.len().saturating_sub(refs_start) / 8;
+        let count = usize::from(refs).min(complete);
+        let mut forwarders = Vec::new();
+        let mut bad_forwarder = false;
+        for i in 0..count {
+            let at = refs_start + i * 8;
+            if let Some(name) = directory.u16_le(at + 4).and_then(name_of) {
+                if !budget.take(name.len()) {
+                    break;
+                }
+                forwarders.push(name);
+            } else {
+                bad_forwarder = true;
+            }
+        }
+        if bad_forwarder {
+            out.truncated = true;
+            out.warnings.push("a bound forwarder name is outside its directory".into());
+        }
+        out.bound_modules.push(BoundModule { name: name.unwrap_or_default(), timestamp: stamp, forwarders });
         if budget.exhausted {
             return;
         }
-        pos = pos.saturating_add((usize::from(refs) + 1) * 8);
+        if count < usize::from(refs) {
+            out.truncated = true;
+            out.warnings.push("the bound import forwarder records run past the directory".into());
+            return;
+        }
+        pos = refs_start + count * 8;
     }
+    out.truncated = true;
+    out.warnings.push(format!("only the first {MAX_IMPORT_DESCRIPTORS} bound import descriptors were read"));
 }
 
 /// Read the import, delay-load and bound import directories.
@@ -597,34 +530,6 @@ pub fn export_table_with_text_limit(data: &[u8], h: &PeHeaders, max_text_bytes: 
                 out.entries.push(PeExport { ordinal, name: None, rva, forwarder });
             }
         }
-    }
-    Some(out)
-}
-
-/// Decoded Rich header entries: (product id, build, count).
-pub fn rich_header(data: &[u8], pe_offset: usize) -> Option<Vec<(u16, u16, u32)>> {
-    let r = Reader::new(data);
-    let region = data.get(0x40..pe_offset.min(data.len()))?;
-    let rich = region.windows(4).position(|w| w == b"Rich")? + 0x40;
-    let key = r.u32_le(rich + 4)?;
-    // Walk back to "DanS".
-    let mut pos = rich;
-    let mut start = None;
-    while pos >= 0x44 {
-        pos -= 4;
-        if r.u32_le(pos)? ^ key == 0x536e_6144 {
-            start = Some(pos);
-            break;
-        }
-    }
-    let start = start?;
-    let mut out = Vec::new();
-    let mut o = start + 16;
-    while o + 8 <= rich && out.len() < 256 {
-        let id = r.u32_le(o)? ^ key;
-        let count = r.u32_le(o + 4)? ^ key;
-        out.push(((id >> 16) as u16, (id & 0xffff) as u16, count));
-        o += 8;
     }
     Some(out)
 }
@@ -845,29 +750,7 @@ pub fn parse_resources(data: &[u8], max_entries: usize) -> Result<Resources, For
     let Some((rva, size)) = h.dir(2) else { return Ok(res) };
     let base = h.rva_to_offset(rva).ok_or_else(|| FormatError::Malformed("resource directory is not in the file".into()))?;
     let available = data.get(base..).ok_or_else(|| FormatError::Truncated("resource directory".into()))?;
-    // Keep resource metadata inside the initial RVA mapping.
-    let next_section_distance = |count: usize| {
-        h.sections
-            .iter()
-            .take(count)
-            .filter(|s| s.virtual_size.max(s.raw_size) > 0)
-            .filter_map(|s| s.rva.checked_sub(rva))
-            .filter(|&distance| distance > 0)
-            .min()
-            .unwrap_or(u32::MAX)
-    };
-    let mapped_len = match h.sections.iter().enumerate().find(|(_, s)| rva.checked_sub(s.rva).is_some_and(|delta| delta < s.virtual_size.max(s.raw_size))) {
-        Some((index, s)) => rva.checked_sub(s.rva).and_then(|delta| s.raw_size.checked_sub(delta)).map(|len| len.min(next_section_distance(index))),
-        None => h.size_of_headers.checked_sub(rva).map(|len| len.min(next_section_distance(h.sections.len()))),
-    }
-    .map(u64::from)
-    .and_then(|len| {
-        let address_end = u64::from(u32::MAX) + 1;
-        let remaining_rvas = address_end.checked_sub(u64::from(rva))?;
-        let remaining_offsets = address_end.checked_sub(u64::try_from(base).ok()?)?;
-        usize::try_from(len.min(remaining_rvas).min(remaining_offsets)).ok()
-    })
-    .ok_or_else(|| FormatError::Malformed("resource directory is not in the file".into()))?;
+    let mapped_len = h.rva_file_len(rva).ok_or_else(|| FormatError::Malformed("resource directory is not in the file".into()))?;
     if size as usize > available.len() {
         res.warnings.push("resource directory runs past the end of the file; reading the available bytes".into());
     }
@@ -1138,6 +1021,85 @@ mod tests {
                 let _ = imports(&m, &h);
             }
             let _ = crate::parse_binary(&m);
+        }
+    }
+}
+
+#[cfg(test)]
+mod shared_parity {
+    use super::*;
+    fn compare(data: &[u8]) {
+        assert_eq!(legacy::has_pe_header(data), has_pe_header(data));
+        match (legacy::headers(data), headers(data)) {
+            (Ok(a), Ok(b)) => {
+                assert_eq!(format!("{a:?}"), format!("{b:?}"));
+                assert_eq!(serde_json::to_value(&a.sections).unwrap(), serde_json::to_value(&b.sections).unwrap());
+                for rva in [0, 1, 127, 4095, 4096, 4097, u32::MAX] {
+                    assert_eq!(a.rva_to_offset(rva), b.rva_to_offset(rva));
+                    assert_eq!(a.rva_file_len(rva), b.rva_file_len(rva));
+                    assert_eq!(a.image_va(u64::from(rva)), b.image_va(u64::from(rva)));
+                }
+                assert_eq!(a.image_va(u64::MAX), b.image_va(u64::MAX));
+                for i in 0..18 {
+                    assert_eq!(a.dir(i), b.dir(i));
+                }
+            }
+            (Err(a), Err(b)) => assert_eq!(a, b),
+            other => panic!("PE parity mismatch: {other:?}"),
+        }
+    }
+    #[test]
+    fn shared_headers_errors_bounds_and_mapping_match() {
+        for wide in [false, true] {
+            let mut data = vec![0; 8192];
+            data[..2].copy_from_slice(b"MZ");
+            data[0x3c..0x40].copy_from_slice(&128u32.to_le_bytes());
+            data[128..132].copy_from_slice(b"PE\0\0");
+            let opt = 152;
+            let size = if wide { 240u16 } else { 224 };
+            data[148..150].copy_from_slice(&size.to_le_bytes());
+            data[opt..opt + 2].copy_from_slice(&if wide { 0x20bu16 } else { 0x10b }.to_le_bytes());
+            data[opt + 60..opt + 64].copy_from_slice(&512u32.to_le_bytes());
+            let section = opt + usize::from(size);
+            for (index, rva, raw) in [(0, 4096u32, 512u32), (1, 4097, u32::MAX)] {
+                let base = section + index * 40;
+                data[base..base + 4].copy_from_slice(b"test");
+                for (field, value) in [(8, 32u32), (12, rva), (16, 16), (20, raw)] {
+                    data[base + field..base + field + 4].copy_from_slice(&value.to_le_bytes());
+                }
+            }
+            for count in [0u16, 1, 96, 97, u16::MAX] {
+                data[134..136].copy_from_slice(&count.to_le_bytes());
+                compare(&data);
+                if count == 97 {
+                    assert_eq!(headers(&data).unwrap().sections.len(), 96);
+                }
+            }
+            for len in 0..450 {
+                compare(&data[..len]);
+            }
+            for pos in 0..500 {
+                let old = data[pos];
+                data[pos] = 255;
+                compare(&data);
+                data[pos] = old;
+            }
+        }
+        for s in 0..256 {
+            assert_eq!(legacy::subsystem_name(s), subsystem_name(s));
+        }
+    }
+    #[test]
+    fn shared_rich_header_keeps_bounded_entries() {
+        let mut data = vec![0; 4096];
+        data[64..68].copy_from_slice(&0x536e6144u32.to_le_bytes());
+        data[3000..3004].copy_from_slice(b"Rich");
+        assert_eq!(rich_header(&data, 4096).unwrap().len(), 256);
+        for off in [0, 63, 64, 80, 3000, 3004, 3008, 4096, usize::MAX] {
+            assert_eq!(legacy::rich_header(&data, off), rich_header(&data, off));
+        }
+        for len in (0..data.len()).step_by(13) {
+            assert_eq!(legacy::rich_header(&data[..len], 4096), rich_header(&data[..len], 4096));
         }
     }
 }
