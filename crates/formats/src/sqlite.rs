@@ -37,6 +37,8 @@ const MAX_SCHEMA_TEXT: usize = 1 << 20;
 /// Schema text one walk keeps whole in all. Past it, schema text is cut at [`MAX_TEXT`] like other
 /// text, so schema rows that share an overflow chain can't multiply the file's size.
 const MAX_SCHEMA_TEXT_TOTAL: usize = 32 << 20;
+/// Most notes from the schema walk shown in an overview; a damaged schema can note every row.
+const MAX_SCHEMA_NOTES: usize = 20;
 
 const MAGIC: &[u8; 16] = b"SQLite format 3\0";
 
@@ -116,7 +118,7 @@ pub struct Overview {
     /// Non-fatal observations about consistency.
     pub integrity_notes: Vec<String>,
     pub schema: Vec<SchemaObject>,
-    /// True when the schema listing hit the object cap.
+    /// True when the schema listing hit the object cap or part of its b-tree couldn't be read.
     pub schema_truncated: bool,
 }
 
@@ -424,7 +426,7 @@ impl<'a> SqliteDb<'a> {
 
     /// Build the whole-database overview, including the schema.
     pub fn overview(&self) -> Overview {
-        let (schema, schema_truncated) = self.schema();
+        let (schema, schema_truncated, schema_notes) = self.schema();
         let file_size = self.data.len() as u64;
         let page_count_from_size = self.page_count();
         let mut notes = Vec::new();
@@ -443,30 +445,37 @@ impl<'a> SqliteDb<'a> {
         if self.header.freelist_pages > 0 {
             notes.push(format!("{} page(s) are on the freelist (deleted content may linger there; it is not read).", self.header.freelist_pages));
         }
+        let unshown = schema_notes.len().saturating_sub(MAX_SCHEMA_NOTES);
+        notes.extend(schema_notes.into_iter().take(MAX_SCHEMA_NOTES).map(|note| format!("Reading sqlite_schema: {note}")));
+        if unshown > 0 {
+            notes.push(format!("Reading sqlite_schema: {unshown} more note(s) not shown."));
+        }
         Overview { header: self.header.clone(), file_size, page_count_from_size, integrity_notes: notes, schema, schema_truncated }
     }
 
     /// Walk the `sqlite_schema` b-tree (rooted at page 1) and return its objects. Columns are
-    /// parsed from the whole CREATE statement; the text shown is cut at [`MAX_TEXT`] bytes.
-    pub fn schema(&self) -> (Vec<SchemaObject>, bool) {
-        let (mut objects, truncated) = self.whole_schema();
+    /// parsed from the whole CREATE statement; the text shown is cut at [`MAX_TEXT`] bytes. The
+    /// flag is true when the list may be incomplete (the object cap was hit, or part of the b-tree
+    /// couldn't be read), and the notes say what the walk skipped or cut.
+    pub fn schema(&self) -> (Vec<SchemaObject>, bool, Vec<String>) {
+        let (mut objects, truncated, notes) = self.whole_schema();
         for object in &mut objects {
             for text in [&mut object.obj_type, &mut object.name, &mut object.tbl_name, &mut object.sql] {
                 cut_at_max_text(text);
             }
         }
-        (objects, truncated)
+        (objects, truncated, notes)
     }
 
     /// The schema objects with their whole text (up to [`MAX_SCHEMA_TEXT`] while
     /// [`MAX_SCHEMA_TEXT_TOTAL`] lasts), for reading rows.
-    fn whole_schema(&self) -> (Vec<SchemaObject>, bool) {
+    fn whole_schema(&self) -> (Vec<SchemaObject>, bool, Vec<String>) {
         let mut out = Vec::new();
         let mut w = RowWalk::new(MAX_SCHEMA_OBJECTS);
         w.text_cap = MAX_SCHEMA_TEXT;
         w.text_budget = MAX_SCHEMA_TEXT_TOTAL;
         self.collect_table_rows(&mut w, 1, 0);
-        let truncated = w.out.len() >= MAX_SCHEMA_OBJECTS;
+        let truncated = w.incomplete || w.out.len() >= MAX_SCHEMA_OBJECTS;
         for row in w.out {
             // sqlite_schema columns: type, name, tbl_name, rootpage, sql.
             let get_text = |i: usize| match row.values.get(i) {
@@ -484,12 +493,12 @@ impl<'a> SqliteDb<'a> {
             let columns = if obj_type == "table" { parse_create_columns(&sql) } else { Vec::new() };
             out.push(SchemaObject { obj_type, name, tbl_name, rootpage, sql, columns });
         }
-        (out, truncated)
+        (out, truncated, w.notes)
     }
 
     /// Find a schema object (table/index/view/trigger) by name (case-insensitive).
     pub fn find_object(&self, name: &str) -> Option<SchemaObject> {
-        let (schema, _) = self.schema();
+        let (schema, ..) = self.schema();
         schema.into_iter().find(|o| o.name.eq_ignore_ascii_case(name))
     }
 
@@ -541,7 +550,7 @@ impl<'a> SqliteDb<'a> {
         let hit_cap = w.seen >= want && want > 0;
         let skipped = offset.min(w.seen);
         let mut page = w.out;
-        let (schema, _) = self.whole_schema();
+        let (schema, ..) = self.whole_schema();
         if let Some(table) = schema.iter().find(|o| o.obj_type == "table" && o.rootpage == rootpage) {
             let definitions = column_definitions(&table.sql);
             let generated: Vec<bool> = definitions.iter().map(|(_, rest)| is_virtual_column(rest)).collect();
@@ -2344,6 +2353,62 @@ mod tests {
         // find_object is case-insensitive.
         assert!(parsed.find_object("ITEMS").is_some());
         assert!(parsed.find_object("nope").is_none());
+    }
+
+    /// The schema's b-tree as an interior root on page 1 whose left child is `child` and whose
+    /// right child, page 3, is the fixture's schema leaf.
+    fn interior_schema_db(child: u32) -> Vec<u8> {
+        const PAGE: usize = craft_anything_testkit::sqlite::PAGE_SIZE;
+        let mut db = craft_anything_testkit::sqlite::simple_db();
+        let top = usize::from(u16::from_be_bytes([db[105], db[106]]));
+        let mut leaf = vec![0u8; PAGE];
+        leaf[..8].copy_from_slice(&db[100..108]);
+        leaf[8..10].copy_from_slice(&db[108..110]);
+        leaf[top..].copy_from_slice(&db[top..PAGE]);
+        db.extend(leaf);
+        db[28..32].copy_from_slice(&3u32.to_be_bytes());
+        let cell = PAGE - 5;
+        db[100] = 0x05;
+        db[103..105].copy_from_slice(&1u16.to_be_bytes());
+        db[105..107].copy_from_slice(&(cell as u16).to_be_bytes());
+        db[108..112].copy_from_slice(&3u32.to_be_bytes());
+        db[112..114].copy_from_slice(&(cell as u16).to_be_bytes());
+        db[cell..cell + 4].copy_from_slice(&child.to_be_bytes());
+        db[cell + 4] = 1;
+        db
+    }
+
+    #[test]
+    fn schema_walk_that_skips_part_of_the_tree_is_incomplete() {
+        let plain = craft_anything_testkit::sqlite::simple_db();
+        let ov = SqliteDb::parse(&plain).unwrap().overview();
+        assert!(!ov.schema_truncated);
+        assert!(ov.integrity_notes.is_empty());
+
+        // A left child that is the right child again (page 3), and one past the end of the file.
+        for (child, note) in [(3, "repeated b-tree child page 3"), (9, "unreadable b-tree page 9")] {
+            let db = interior_schema_db(child);
+            let ov = SqliteDb::parse(&db).unwrap().overview();
+            assert_eq!(ov.schema.iter().map(|o| o.name.as_str()).collect::<Vec<_>>(), ["items"]);
+            assert!(ov.schema_truncated, "child {child}");
+            assert!(ov.integrity_notes.iter().any(|n| n.contains(note)), "{:?}", ov.integrity_notes);
+            assert!(SqliteDb::parse(&db).unwrap().schema().1);
+        }
+
+        // Rows whose cell pointers leave the page: one, then more than the notes shown.
+        for bad in [1, MAX_SCHEMA_NOTES + 5] {
+            let mut db = plain.clone();
+            db[103..105].copy_from_slice(&(bad as u16 + 1).to_be_bytes());
+            for i in 0..bad {
+                db[110 + 2 * i..112 + 2 * i].copy_from_slice(&u16::MAX.to_be_bytes());
+            }
+            let ov = SqliteDb::parse(&db).unwrap().overview();
+            assert_eq!(ov.schema.len(), 1);
+            assert!(ov.schema_truncated);
+            let shown = ov.integrity_notes.iter().filter(|n| n.contains("unreadable row on page 1")).count();
+            assert_eq!(shown, bad.min(MAX_SCHEMA_NOTES), "{:?}", ov.integrity_notes);
+            assert_eq!(ov.integrity_notes.iter().any(|n| n.ends_with("5 more note(s) not shown.")), bad > MAX_SCHEMA_NOTES);
+        }
     }
 
     #[test]

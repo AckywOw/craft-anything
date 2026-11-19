@@ -910,6 +910,10 @@ looking at any limit, and kept every folder and link it met: a tree of empty fol
 one folder with millions of names, had no limit at all. Count what is examined, not only what is
 kept; stop at the first thing over a limit; bound what is held while collecting; and test the
 shapes that never reach the limit on the thing counted (no files, only links, one huge folder).
+The order matters as much as the count: the walk listed a folder's files before opening any of its
+subfolders, so a file limit cut the tree in that order, and a later sort by path couldn't bring back
+the file inside an earlier folder that was dropped for later ones. When a result is shown in an
+order and cut by a limit, produce it in that order; don't sort what a different order kept.
 The fix repeated it one level down: to keep a folder's first names in order it held only as many
 names as the limit, but read the folder to its end to find them, 100,000 entries for a limit of 2,
 and its test checked what was held, not what was read. A limit on the work is a count of reads:
@@ -1010,8 +1014,8 @@ or changes a title, not only for UI changes.
 
 **An inserted name became another placeholder.** Filling `{saved}` and then `{used}` with repeated
 replacements rewrites a saved builder named `{used}`. Fill every placeholder in one pass over the
-template (`i18n::trf` does), never by chained `replace` calls, so inserted names stay literal; test
-placeholder-looking names as well as ordinary ones.
+template (`platform::text::fill`, which `i18n::trf` uses), never by chained `replace` calls, so
+inserted names stay literal; test placeholder-looking names as well as ordinary ones.
 
 **A second lock in one statement.** `CliSpec { deep: !engine.session().clean_room(), logs: engine.session().config_dir(), … }`
 looked like two quick reads, but an unbound guard lives to the end of the statement, so the second

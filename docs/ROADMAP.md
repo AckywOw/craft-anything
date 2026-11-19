@@ -550,8 +550,9 @@ been run live.
       Not run against a live provider — claimed: justinjohn0306, branch `feature/r5.4-requests-per-minute`
 - [x] Offer `requests_per_minute` in Settings → AI and `ai request-rate` (#668)
       — PR #1841; claimed: rudycelekli, branch feature/r5.4-request-rate-setting
-- [ ] Say in the feed when a build is waiting for its turn (#668); a tokens-per-minute limit
-      isn't covered either
+- [x] Say in the feed when a build is waiting for its turn (#668)
+      — claimed: justinjohn0306, branch feature/r5.4-say-when-a-request-waits
+- [ ] A tokens-per-minute limit isn't covered by the request pacing (#668)
 - [x] Find LM Studio on another port (#73): the port in its settings file (when it is there) and
       the ports 1235-1239 are probed like the usual servers; OpenCode's own `baseURL`s were already
       read (#83)
@@ -1523,9 +1524,11 @@ Gaps found while using the app for real projects.
       and other values stay literal, and unknown names and stray braces are kept as written. The
       R5.5 saved-builder notice uses it instead of its own split
       — claimed: mansur-akhmadi, branch bugfix/r2.9-trf-literal-values
-- [ ] The Unity build steps (`rebuild::stacks`) still fill `{editor}`, `{player}` and `{ext}` with
-      chained `replace` calls, so an editor path holding `{ext}` or `{player}` is rewritten. The
-      AI layer can't call `i18n::trf` (L6): it needs a one-pass fill at a layer both can reach
+- [x] The engine build steps (`rebuild::stacks`) filled `{editor}`, `{player}` and `{ext}` with
+      chained `replace` calls, so an editor path holding `{ext}` or `{player}` was rewritten. The
+      one-pass fill now lives in `platform::text::fill` (L2), which both the steps and
+      `i18n::trf` use, so the editor's path reaches the builder as it is
+      — claimed: mansur-akhmadi, branch bugfix/r2.9-stack-steps-literal-values
 - [x] Each project chooses, per kind of action, what the builder's approvals get (allow, ask or
       refuse): reading the web, commands, files outside the project, pushing and publishing,
       deleting outside the project, system changes, other tools. Unset kinds follow Auto mode as
@@ -2302,6 +2305,23 @@ Owner: open · Status: in progress
       subfolders read "0 files in 100 entries". Folders, links and files are now one list in path
       order before the cut, and no file after the cut is read
       — claimed: hichang4u, branch bugfix/r3.11-inventory-path-order
+- [x] That path order was only the order of what the walk kept: the walk listed a folder's files
+      before opening its subfolders, so when the file limit stopped it, a file inside an earlier
+      folder (`a/first.txt`) was dropped while later root files (`z1.txt`…) were kept, and sorting
+      couldn't bring it back (CodeRabbit on #2072). The walk now opens a folder where its name sorts
+      in its parent, so a limit that stops the walk (files, entries, path bytes) cuts the tree where
+      a listing of it would end, and results are sorted folder by folder (`path_order`: everything in
+      `a` before `a-b.txt`). Only the listings of the folders on the current path are held, within
+      the same entry limit. Two limits leave a gap rather than an end: a folder past `max_depth` is
+      skipped (the walk is marked cut short) and later entries are still listed; and where a
+      folder's own listing is cut by the entry or path-byte limit, the names kept are the ones the
+      system returned first, which only NTFS returns in name order
+      — claimed: hichang4u, branch bugfix/r3.11-walk-path-order
+- [ ] A walk names entries by `to_string_lossy`, so on Unix two folders whose raw names differ only
+      in bytes that aren't UTF-8 (`a\x80`, `a\x81`) both read as `a�`: they are walked as two
+      folders but sorted as one path, so a cut walk can keep a later file and drop an earlier one
+      (CodeRabbit on #2101). Order by the raw name, or report a name that can't be shown
+      unambiguously as unlisted
 
 ### R3.12 Format parser correctness
 Owner: open · Status: in progress
@@ -2492,6 +2512,16 @@ Owner: open · Status: in progress
       — claimed: Chr0mium24, branch bugfix/r3.12-sqlite-real-affinity
 - [x] Tokenize tight SQLite `CREATE TABLE` identifiers, declared type spans, adjacent column constraints, signed or leading-dot `DEFAULT` clauses (`DEFAULT-5`, `DEFAULT.5`), and semicolon-terminated table options (`STRICT;`, `WITHOUT ROWID;`) without whitespace (#2108). — claimed: Plastic-time, branch bugfix/r3.12-sqlite-tight-type-and-clause-tokens
 - [x] Read `DEFAULT+X'41'` as the blob, and bare `DEFAULT` words with non-ASCII characters or a later `$` as their text, as SQLite does for rows written before the column was added, and skip a byte order mark where a token starts; the `--` after `e` fixture is DDL SQLite creates (#2108 follow-up). — claimed: Plastic-time, branch bugfix/r3.12-sqlite-default-followups
+- [x] A SQLite schema whose `sqlite_schema` b-tree couldn't be read whole (an unreadable child
+      page or row, a page of the wrong kind, a walk budget spent) was listed as complete: the
+      overview dropped the walk's `incomplete` flag and notes. `schema_truncated` is now set for
+      such a walk as well as for the object cap, its first notes are in the integrity notes, and
+      `db_sqlite_show` adds a `schema_incomplete` limitation, partial coverage, and an unknown-table
+      error that says only the listed part was searched
+      — claimed: mansur-akhmadi, branch bugfix/r3.12-sqlite-schema-incomplete
+- [ ] A schema row whose CREATE statement was read only in part (a cut or looping overflow
+      chain, or text cut once the schema text budget is spent) leaves `schema_truncated` false,
+      so its table's column list can be short with no flag on it
 - [x] Require a complete DNS question's type and class fields before retaining it, and keep
       truncated questions out of packet inventories while reporting the incomplete message
       — claimed: Afloat16, branch bugfix/r3.12-dns-question-class-review-20261104
@@ -3041,6 +3071,15 @@ Owner: open · Status: in progress
       — claimed: Plastic-time, branch bugfix/r3.12-squashfs-table-bounds
 - [x] Require each raw or decoded file block to cover exactly its logical range, including the partial final block, so short blocks cannot shift later contents and long blocks cannot be hidden by truncation.
       — claimed: Afloat16, branch bugfix/r3.12-squashfs-block-output-size-20261110
+- [x] The firmware scan gave a squashfs 2.x or 3.x region the block size read at offset 12, which
+      is the uid table's start in those versions (`block_size` is there only in version 4): it
+      reads the 32-bit `block_size` they keep at offset 51, in either byte order, and leaves it
+      out of a superblock cut before it. Their description no longer names a compression read
+      from offset 20 (their inode table's start): it says unknown, as their details did
+      — claimed: mansur-akhmadi, branch bugfix/r3.12-squashfs-v3-block-size
+- [ ] A squashfs 2.x or 3.x superblock is taken on its magic, version and `bytes_used` alone: check
+      its block size against its `block_log` (offset 34) as version 4's is, before calling it a
+      filesystem
 - [x] Recover zero-filled cramfs hole blocks at full and partial page boundaries while retaining the existing recovery budgets.
       — claimed: Afloat16, branch bugfix/r3.12-cramfs-hole-blocks-20261110
 - [x] Charge firmware ZIP outputs before decoding the next member, so byte and file limits bound retained member data.
