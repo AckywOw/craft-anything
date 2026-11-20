@@ -110,6 +110,24 @@ impl Bench {
         self.runner = Some(pid);
         pid
     }
+
+    /// Poll `run` until it finishes, for a runner whose build may begin and end between two
+    /// looks. The runner is remembered if it is ever seen, so it is still ended when this fails.
+    fn follow_to_the_end(&mut self, run: &mut RebuildRun, limit: Duration) -> Vec<RunEvent> {
+        let inbox = self.ws.inbox_dir();
+        let mut seen = Vec::new();
+        let deadline = Instant::now() + limit;
+        while run.is_running() {
+            if self.runner.is_none() {
+                self.runner = read_started(&inbox).map(|s| s.pid);
+            }
+            seen.extend(run.poll());
+            assert!(Instant::now() < deadline, "the follower never finished: {seen:?}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+        seen.extend(run.poll());
+        seen
+    }
 }
 
 impl Drop for Bench {
@@ -203,8 +221,10 @@ fn a_pause_asked_before_the_runner_began_still_reaches_it() {
     let mut run = start_in_runner(&b.hub, b.ws.clone(), b.options("Make it blue"), &cli(), &b.staging).unwrap();
     run.stop();
     assert!(!attach::stop_path(&b.ws.root).exists(), "not written before the run has begun");
-    b.runner_began();
-    let end = to_the_end(&mut run, Duration::from_secs(60));
+    // The pause reaches the runner as it begins, so on a fast machine its build has begun, paused
+    // and let the project go between two looks: waiting to see it "begun" failed there every
+    // time. The run's own end says what happened, however quickly.
+    let end = b.follow_to_the_end(&mut run, Duration::from_secs(60));
     assert!(matches!(end.last(), Some(RunEvent::Finished { paused: true, .. })), "{end:?}");
     wait(Duration::from_secs(15), "the runner lets the project go", || !build_lock::held(&b.ws.root));
     drop(server);

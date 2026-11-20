@@ -118,6 +118,14 @@ cleanup. Use a guarded Rust parent instead of shell syntax, and stop before asse
 Its child must inherit the watched group/job: another `Process` or `Launch` creates a separate
 Unix group and would no longer test the ancestor's shutdown.
 
+**A test waited to see a state that was already over.** A runner test asked for a pause before
+the runner began, then waited to see its build "begun" (the lock held and the started record
+there). The pause reaches the runner as it begins, so on CI's Linux the build had begun, paused
+and let the project go between two 50 ms looks, and the test failed there every time while it
+passed on Windows and under WSL2. Don't wait to observe a state the thing under test is free to
+leave: wait for what it leaves behind (the run's end and its result), and note a process to
+clean up only if it is seen.
+
 **An isolated PATH still assumed system utilities lived in `/bin`.** The remote setup fixture
 linked `mkdir`, `chmod` and `mv` there, so a host with utilities elsewhere got dangling links.
 Resolve fixture utilities on the host, make their paths absolute, then populate the private PATH.
