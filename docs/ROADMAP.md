@@ -357,6 +357,10 @@ only when it's green and a maintainer has fully reviewed it, code as well as wor
       (craft-contrib house rule 13: don't link to it). Point the shared standards at
       storytold/craft-contrib and drop the private release playbook reference
       — claimed: Fadlalla-ai, branch docs/r5.2-craft-contrib-links
+- [ ] `cutter::tests::sends_the_command_in_the_path` (engines) failed once in CI with "Interrupted
+      system call": a loopback call interrupted by a signal was reported as "no session answered".
+      Call again when interrupted, within the caller's time limit
+      — claimed: tanish2k09, branch bugfix/r5.2-interrupted-loopback-call
 
 ### R5.3 A builder that can't make progress stops
 Owner: open · Status: todo
