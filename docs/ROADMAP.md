@@ -1014,6 +1014,7 @@ Owner: open · Status: in progress
       #2098), so a configured header, such as an API key, may be sent on to another https host.
       Follow them by hand as the plain-http path does: each hop checked, and the configured
       headers and session only to the configured origin
+      — claimed: tanish2k09, branch bugfix/r1.5-https-plugin-redirects
 - [ ] More pins once their hashes are checked against the publisher: Chromium (no published
       checksums found yet), Rizin for Linux (the tar.xz unpacks to ~800 MB, so it needs streaming
       extraction) and macOS (a .pkg)
