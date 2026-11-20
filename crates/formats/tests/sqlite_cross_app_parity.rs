@@ -1,4 +1,5 @@
-use craft_anything_formats::sqlite::{CellValue, FormatError, MAX_ROWS, SqliteDb};
+use craft_anything_formats::FormatError;
+use craft_anything_formats::sqlite::{CellValue, MAX_ROWS, SqliteDb};
 
 fn varint(mut value: u64) -> Vec<u8> {
     let mut out = vec![u8::try_from(value & 0x7f).unwrap_or(0)];
