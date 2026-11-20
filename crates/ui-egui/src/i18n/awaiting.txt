@@ -25,3 +25,4 @@ The sign-in window was open too long, so it was closed. What it had saved is kep
 Stopped waiting for the sign-in window. What it had saved is kept.
 Stopped the sign-in.
 Wait until the new project is made.
+This project's usage record couldn't be read, so what its builds spent isn't known.
