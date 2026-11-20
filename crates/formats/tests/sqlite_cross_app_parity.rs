@@ -166,7 +166,8 @@ fn cross_app_parity_text_blob_null_overflow_and_ordering() {
         vec![
             CellValue::Int(2),
             CellValue::Int(0),
-            CellValue::Int(1),
+            // Column `r` has REAL affinity: Craft Anything promotes integer-stored 1 to Real(1.0).
+            CellValue::Real(1.0),
             CellValue::Null,
             CellValue::Text { text: String::new(), truncated: false },
             CellValue::Text { text: String::new(), truncated: false },
