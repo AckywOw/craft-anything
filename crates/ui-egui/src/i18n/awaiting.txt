@@ -17,3 +17,20 @@ A build is still working
 Keep building in the background, or pause it? A build in the background keeps using your AI, and shows here again when you open Craft Anything.
 Keep building
 Don't ask again
+That folder's name has characters Craft Anything can't read. Pick another folder.
+Does the site show more once you're signed in?
+Sign in to this site
+A browser window opens: sign in there yourself, then close it. Craft Anything never sees your password. The sign-in is kept on this computer and used when this site is studied.
+Sign in in the browser window that opened, then close it.
+Stop waiting
+Finish signing in to the site first.
+Couldn't sign in to the site.
+The sign-in window was closed. Studies of this site will use what it saved.
+Your sign-in was saved, but the site still asks you to sign in. Sign in again and choose "remember me" if the site offers it.
+Your sign-in was saved, but opening the site again to check it didn't work.
+The sign-in window was open too long, so it was closed. What it had saved is kept.
+Stopped waiting for the sign-in window. What it had saved is kept.
+Stopped the sign-in.
+Wait until the new project is made.
+This project's usage record couldn't be read, so what its builds spent isn't known.
+Arguments in square brackets must be a list of quoted words, like ["--port", "8080"]. Or leave out the brackets and separate them with spaces.
