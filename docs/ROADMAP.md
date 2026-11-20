@@ -1650,6 +1650,7 @@ Gaps found while using the app for real projects.
 - [ ] Plugin arguments in brackets that aren't a JSON array of strings (`[1, 2]`, a trailing
       comma) are still split on spaces without a word (#2153, review of #2154). Refuse them with a
       message that says what form is taken
+      — claimed: tanish2k09, branch bugfix/r2.9-plugin-args-bad-list
 - [x] Each project chooses, per kind of action, what the builder's approvals get (allow, ask or
       refuse): reading the web, commands, files outside the project, pushing and publishing,
       deleting outside the project, system changes, other tools. Unset kinds follow Auto mode as
