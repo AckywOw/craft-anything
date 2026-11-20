@@ -1010,11 +1010,17 @@ Owner: open · Status: in progress
       stay on this computer (`crates/engines/src/mcp_client.rs`).
       Unit-tested with local HTTP and TLS servers.
       — claimed: Plastic-time, branch bugfix/r1.5-mcp-http-cleartext-guard
-- [ ] An https plugin's redirects are still followed by the HTTP library's defaults (review of
-      #2098), so a configured header, such as an API key, may be sent on to another https host.
-      Follow them by hand as the plain-http path does: each hop checked, and the configured
-      headers and session only to the configured origin
+- [x] An https plugin's redirects were followed by the HTTP library's defaults (review of
+      #2098), so a configured header, such as an API key, could be sent on to another https host.
+      They're now followed by hand as the plain-http path's are (`max_redirects(0)` for both):
+      `307`/`308` only, at most 5 hops in one deadline, each target checked by
+      `next_hop_allowed` (https and `url_allowed`; plain HTTP refused as a downgrade), and the
+      configured headers and session only to the configured origin. Unit-tested with local TLS
+      servers (another origin gets the body without the key or session, the same origin keeps
+      both, refused targets aren't contacted or shown, the hop limit, a `302` not followed)
       — claimed: tanish2k09, branch bugfix/r1.5-https-plugin-redirects
+- [ ] Live-check an https MCP plugin against a real server that redirects (to another path and
+      to another host), and that the system proxy still carries https plugin requests
 - [ ] More pins once their hashes are checked against the publisher: Chromium (no published
       checksums found yet), Rizin for Linux (the tar.xz unpacks to ~800 MB, so it needs streaming
       extraction) and macOS (a .pkg)
