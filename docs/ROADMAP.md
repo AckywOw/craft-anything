@@ -248,6 +248,10 @@ only when it's green and a maintainer has fully reviewed it, code as well as wor
       a save could be shown after it, putting the old folder back (in the app too, until the next
       refresh). Snapshots are numbered as they're read and an older one is dropped
       — claimed: bflatastic, branch bugfix/r5.2-stale-backend-snapshots
+- [ ] Two paths are outside that numbering (review of #1721): choosing the builder saves on the
+      UI thread and changes the list without a new number, so a refresh read just before it can
+      still put the old choice back; and the results of a model change and of saved model options
+      aren't filtered at all. Give each the same number, with a test of the order
 - [x] `which::tests::usual_windows_dirs_come_after_path` (platform) failed on Windows with 10
       found, 9 expected ("nothing twice"): #748's second Antigravity folder, counted since #770
 - [x] `capture::console_tests` (platform) timed out now and then with the whole platform suite
@@ -1006,6 +1010,10 @@ Owner: open · Status: in progress
       stay on this computer (`crates/engines/src/mcp_client.rs`).
       Unit-tested with local HTTP and TLS servers.
       — claimed: Plastic-time, branch bugfix/r1.5-mcp-http-cleartext-guard
+- [ ] An https plugin's redirects are still followed by the HTTP library's defaults (review of
+      #2098), so a configured header, such as an API key, may be sent on to another https host.
+      Follow them by hand as the plain-http path does: each hop checked, and the configured
+      headers and session only to the configured origin
 - [ ] More pins once their hashes are checked against the publisher: Chromium (no published
       checksums found yet), Rizin for Linux (the tar.xz unpacks to ~800 MB, so it needs streaming
       extraction) and macOS (a .pkg)
@@ -1534,6 +1542,9 @@ Owner: open · Status: in progress
 - [x] Run the Go row of `[[toolchain]]` on a real existing project on macOS. The opt-in test
       covers a passing module, a failed test assertion and a build syntax error (Go 1.26.4, arm64)
       — PR #1849; claimed: rudycelekli, branch test/r2.7-real-go-project-checks
+- [ ] That opt-in Go test writes Go's build cache and module folder in the real home when someone
+      runs it (review of #1849). Let the check functions take environment for the child, and give
+      the test a `GOCACHE` and `GOPATH` inside its temp folder
 - [ ] Run the .NET, Maven and Gradle rows of `[[toolchain]]` on real projects, and every row
       on Windows (`windows_program`): Rust, Node.js, Python, Go and Make were run for real, on a Mac
       only. Also a person's own Unity project: it's opened in batch mode, which should exit with
@@ -1605,6 +1616,9 @@ Gaps found while using the app for real projects.
       JSON array of strings is now taken as the arguments, which also allows an argument with a
       space; anything else is split on spaces as before
       — claimed: bflatastic, branch bugfix/plugin-args-json-array
+- [ ] Plugin arguments in brackets that aren't a JSON array of strings (`[1, 2]`, a trailing
+      comma) are still split on spaces without a word (#2153, review of #2154). Refuse them with a
+      message that says what form is taken
 - [x] Each project chooses, per kind of action, what the builder's approvals get (allow, ask or
       refuse): reading the web, commands, files outside the project, pushing and publishing,
       deleting outside the project, system changes, other tools. Unset kinds follow Auto mode as
@@ -1821,6 +1835,12 @@ Gaps found while using the app for real projects.
       size saved before a GPU change, or a very wide desktop on a GPU that stops at 8192 px. Keep
       the window's size in pixels, a restored one and a resized one too, within the limit of the
       GPU it is drawn with
+- [ ] The macOS app may now send Apple Events to another app the person asks it to control
+      (#1939, #2121). Check on a signed, notarised build that macOS shows its Automation prompt
+      and lists the app under Privacy → Automation, and whether the prompt appears when the
+      request comes through the CLI, which is signed without entitlements
+- [ ] The pin and smoke tests added with #2180 read the real Cargo home and `CARGO_TARGET_DIR`
+      through the process environment; give them a given environment, as the unit tests have
 - [x] "Work on my project" on New project, beside "Make my own version" and "Just look inside":
       pick the folder of a project you already have, say what to change, and its files are edited
       in place, with nothing asked; the project takes the folder's name, an empty folder is
