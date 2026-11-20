@@ -764,7 +764,8 @@ impl<'a> SqliteDb<'a> {
     /// Assemble a cell payload: the local part plus any overflow-page chain, capped.
     fn assemble_payload(&self, page: &[u8], local_off: usize, payload_len: usize, is_table_leaf: bool, notes: &mut Vec<String>) -> Option<Vec<u8>> {
         let usable = self.usable;
-        let local = craft_sqlite::local_payload_len(usable, payload_len, is_table_leaf).ok()?;
+        let kind = if is_table_leaf { craft_sqlite::PayloadKind::TableLeaf } else { craft_sqlite::PayloadKind::Index };
+        let local = craft_sqlite::local_payload_len(u32::try_from(usable).ok()?, payload_len as u64, kind)? as usize;
         let mut out = Vec::new();
         let first = page.get(local_off..local_off.checked_add(local)?)?;
         out.extend_from_slice(first);
