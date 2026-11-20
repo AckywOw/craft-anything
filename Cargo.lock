@@ -1811,7 +1811,7 @@ dependencies = [
 [[package]]
 name = "craft-sqlite"
 version = "0.1.0"
-source = "git+https://github.com/storytold/craft-libs?rev=f428c3d36e0faf3924b76956a01334c051543527#f428c3d36e0faf3924b76956a01334c051543527"
+source = "git+https://github.com/storytold/craft-libs?rev=048ec835e1c9fb055b744aee8fbcb18f0a54d77f#048ec835e1c9fb055b744aee8fbcb18f0a54d77f"
 
 [[package]]
 name = "craft-tar"
