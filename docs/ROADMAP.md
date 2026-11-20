@@ -381,6 +381,7 @@ Every round spends the person's money or quota. One that can't do anything shoul
 - [ ] An unreadable `usage.json` reads as all zeros (`ProjectUsage::load` in `workspace.rs`), so
       the cost shown can be $0 for a build that spent money. Say the count is unknown instead, as
       R2.2's ACP line asks for agents' turns
+      — claimed: tanish2k09, branch bugfix/r5.3-unreadable-usage
 - [ ] Show what the last run used next to Try again. `usage.json` keeps project totals only
       (time, tokens, `cost_usd`, `api_billed_usd`); the activity log has each turn's tokens but
       no cost, since a resumed agent's figure can't be tied to one turn (`activity.rs`). Show
