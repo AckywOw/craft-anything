@@ -300,7 +300,8 @@ impl OpenAi {
 
     fn stream_unchecked(&self, req: &TurnRequest<'_>, on_delta: &mut dyn FnMut(Delta), stop: &Stop) -> Result<TurnResult, ToolError> {
         let agent = http::stream_agent(self.stream_limit);
-        let reader = http::post_json_stoppable(agent, &self.label, &self.url("chat/completions"), self.headers(), self.body(req), stop).map_err(|e| self.explain_key(e))?;
+        let reader = http::post_json_stoppable(agent, &self.label, &self.url("chat/completions"), self.headers(), self.body(req), stop)
+            .map_err(|e| self.explain_key(e))?;
         let mut st = ChatStream::default();
         http::parse_sse(reader, |ev| {
             stop.check()?;
