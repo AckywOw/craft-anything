@@ -1647,10 +1647,16 @@ Gaps found while using the app for real projects.
       JSON array of strings is now taken as the arguments, which also allows an argument with a
       space; anything else is split on spaces as before
       — claimed: bflatastic, branch bugfix/plugin-args-json-array
-- [ ] Plugin arguments in brackets that aren't a JSON array of strings (`[1, 2]`, a trailing
-      comma) are still split on spaces without a word (#2153, review of #2154). Refuse them with a
-      message that says what form is taken
+- [x] Plugin arguments in square brackets that aren't a JSON array of strings (`[1, 2]`, a
+      trailing comma, a nested list) were split on spaces without a word (#2153, review of #2154).
+      The form now says under its fields that bracketed arguments must be a list of quoted words
+      (or plain words without brackets), and Add stays off until they're fixed; text that doesn't
+      both start and end with a bracket is split on spaces as before, and addresses and `.wasm`
+      files, which take no arguments, aren't stopped by it. Checked by state tests of each case and
+      a UI test that types a bad list, sees the message and a disabled Add, then fixes it
       — claimed: tanish2k09, branch bugfix/r2.9-plugin-args-bad-list
+- [ ] The plugin form doesn't check that a command exists or that the plugin answers before it's
+      saved; #2153 also asks for that (a found-program check, a test call)
 - [x] Each project chooses, per kind of action, what the builder's approvals get (allow, ask or
       refuse): reading the web, commands, files outside the project, pushing and publishing,
       deleting outside the project, system changes, other tools. Unset kinds follow Auto mode as

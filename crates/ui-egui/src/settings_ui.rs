@@ -1219,6 +1219,16 @@ fn plugins(app: &mut CraftApp, ui: &mut Ui) {
         );
         widgets::named(args, "Plugin arguments");
     });
+    if app.state.plugin_form.args_refused() {
+        ui.add_space(theme::space::XS);
+        ui.label(
+            RichText::new(tr(
+                r#"Arguments in square brackets must be a list of quoted words, like ["--port", "8080"]. Or leave out the brackets and separate them with spaces."#,
+            ))
+            .color(t.warning)
+            .size(theme::CAPTION),
+        );
+    }
     ui.add_space(theme::space::SM);
     let params = app.state.plugin_form.params();
     if widgets::primary_icon(ui, Some("plus"), "Add", params.is_some()).clicked()

@@ -2186,6 +2186,42 @@ fn settings_controls_change_builds_art_and_studying() {
     assert!(h.state().settings.runtime_study);
 }
 
+/// #2153: arguments in square brackets that aren't a list of quoted words are refused with a
+/// sentence saying what's taken, and Add does nothing until they're fixed.
+#[test]
+fn a_plugins_bad_argument_list_is_refused_until_fixed() {
+    use egui_kittest::kittest::NodeT;
+    const PROBLEM: &str =
+        r#"Arguments in square brackets must be a list of quoted words, like ["--port", "8080"]. Or leave out the brackets and separate them with spaces."#;
+    let mut h = harness(|| {
+        let mut a = demo::app(demo::engine(Mode::Beginner, true));
+        a.state.settings_open = true;
+        a
+    });
+    h.run_steps(3);
+    h.get_by_label("Plugins").click();
+    h.run_steps(3);
+    for (field, text) in [("Plugin id", "ls"), ("Plugin command or address", "server"), ("Plugin arguments", r#"["--stdio", "--port",]"#)] {
+        h.get_by_label(field).focus();
+        h.run_steps(1);
+        h.get_by_label(field).type_text(text);
+        h.run_steps(2);
+    }
+    assert_eq!(h.state().state.plugin_form.args, r#"["--stdio", "--port",]"#);
+    h.get_by_label(PROBLEM);
+    assert!(h.get_by_label("Add").accesskit_node().is_disabled(), "Add is off while the list is bad");
+    h.get_by_label("Add").click();
+    h.run_steps(3);
+    assert_eq!(h.state().state.plugin_form.id, "ls", "a click on Add leaves the form as it is");
+    assert_eq!(h.state().state.plugin_form.params(), None);
+    // Fixed (the trailing comma gone), the message goes and the plugin's arguments are the list.
+    h.state_mut().state.plugin_form.args = r#"["--stdio", "--port"]"#.into();
+    h.run_steps(3);
+    assert!(h.query_by_label(PROBLEM).is_none(), "the message goes once the list is fixed");
+    assert!(!h.get_by_label("Add").accesskit_node().is_disabled(), "Add is on once the list is fixed");
+    assert_eq!(h.state().state.plugin_form.params(), Some(serde_json::json!({"id": "ls", "command": "server", "args": ["--stdio", "--port"]})));
+}
+
 #[test]
 fn a_website_check_lists_each_pages_likeness() {
     let mut h = harness(|| {
