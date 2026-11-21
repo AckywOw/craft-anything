@@ -205,6 +205,12 @@ fn cross_app_parity_truncation_corruption_and_limits() {
     main.extend(page2);
 
     assert!(matches!(SqliteDb::parse(&main[..50]), Err(FormatError::Truncated(_))));
+    let mut bad_ps = main.clone();
+    bad_ps[16..18].copy_from_slice(&1000u16.to_be_bytes());
+    assert!(matches!(SqliteDb::parse(&bad_ps), Err(FormatError::Malformed(_))));
+    let mut bad_usable = main.clone();
+    bad_usable[20] = 40; // 512 - 40 = 472 < 480
+    assert!(matches!(SqliteDb::parse(&bad_usable), Err(FormatError::Malformed(_))));
     let partial_len = SqliteDb::parse(&main[..600]).unwrap().overview();
     assert!(partial_len.integrity_notes.iter().any(|n| n.contains("not a whole number of pages")));
 
