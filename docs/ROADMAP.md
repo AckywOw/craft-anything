@@ -1204,6 +1204,10 @@ Owner: open · Status: in progress
       findings stay visible. File scans, reads and byte hashing still run under the caller's
       session lock; repeated JSON decoding, canonical hashing and payload replacement do not.
       — claimed: Afloat16, branch refactor/r2.2-incremental-investigation-refresh
+- [ ] The refresh above still scans, reads and hashes every investigation and evidence file while
+      the caller holds the session lock, so a large project on a slow or network drive holds up
+      every other tool for that long (review of #2211). Read and hash outside the lock, then take
+      it only to swap in what changed
 - [x] Offer OpenCode locally and over SSH with its own visible chat models and supported thinking
       depths (Low, Medium, High, Xhigh, Max) in settings and headless clients. Choices are validated
       before saving; explicit choices are refused at execution until native MCP support is available.
@@ -1275,6 +1279,18 @@ Owner: open · Status: in progress
 - [ ] A turn stopped before OpenCode's first event leaves no session id to delete: OpenCode names its
       session only in that event, so the session it may already have made stays (#1115, review on
       #1176). Needs a session id known before the run (one we create and pass in), if OpenCode allows it
+- [ ] An OpenCode session left by a version from before turns were recorded (0.5.0 and earlier) is
+      never found by the sweep, which acts only on its own records, so the shared service can
+      still resume it (#1115). Until there is a safe way to tell such a session from the person's
+      own, say so where the sweep reports, with the commands to remove one by hand
+      (`opencode session list`, then `opencode session delete <id>`)
+- [ ] A recorded session on an SSH host that can't be reached three times running is dropped from
+      the records while it may still be alive on the host (#1115). Keep the record and say which
+      host still holds a session, rather than forgetting it
+- [ ] Removing the app through the system's own uninstaller or a launcher runs none of our
+      clean-up, so recorded OpenCode sessions stay (#1115); only `craft-anything-cli uninstall`
+      sweeps them. Say so in the uninstall docs, and sweep from each package's removal step
+      where the package format has one
 - [x] OpenCode's model discovery (`api model.list`, run before every turn to check the chosen
       model) has no `--standalone`, so it starts the shared service, and the service resumes any
       unfinished session on the computer, in any project (#1115). Seen live with 2.2.5 on Linux: a
@@ -1742,6 +1758,11 @@ Owner: maintainers · Status: in progress
 ### R2.9 Everyday use: typing, projects, settings
 Owner: maintainers · Status: in progress
 Gaps found while using the app for real projects.
+- [ ] The headless app the UI tests use builds its engine with `Session::new` (`ui-egui`'s
+      `demo::engine`), not the isolated test session, so a UI test that reaches a tool which
+      saves, or looks for an installed program, touches the real config folder and finds what
+      this computer has. Build it from a session kept in a temp folder with
+      `engines.only_configured`, as `engine::testing::session()` does
 - [x] `i18n::trf` filled placeholders with repeated replacements, so a value containing a later
       placeholder was rewritten. It now fills them in one pass over the template: inserted names
       and other values stay literal, and unknown names and stray braces are kept as written. The
