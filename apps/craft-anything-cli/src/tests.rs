@@ -78,3 +78,61 @@ fn the_command_is_what_the_completions_and_man_pages_are_made_of() {
     // The log variable is declared on its flag, so `--help` lists it.
     assert!(command.get_arguments().any(|a| a.get_id() == "log" && a.get_env().is_some()));
 }
+
+// The commands below start the engine (settings are only read, nothing is written) and print what
+// they found on the run's own streams.
+
+#[test]
+fn commands_list_every_tool_as_json_or_text() {
+    let r = invoke(&["commands", "--format", "json"]);
+    assert_eq!((r.code, r.err.as_str()), (0, ""));
+    let v: serde_json::Value = serde_json::from_str(&r.out).unwrap();
+    assert!(v.as_array().is_some_and(|a| a.iter().any(|c| c["command"] == "core-session-show")));
+    let t = invoke(&["commands", "--format", "text"]);
+    assert_eq!(t.code, 0);
+    assert!(t.out.contains("core-session-show"), "{}", t.out);
+}
+
+#[test]
+fn capabilities_say_which_version_and_how_many_tools() {
+    let r = invoke(&["--compact", "capabilities"]);
+    assert_eq!((r.code, r.err.as_str()), (0, ""));
+    let v: serde_json::Value = serde_json::from_str(&r.out).unwrap();
+    assert_eq!(v["version"], env!("CARGO_PKG_VERSION"));
+    assert!(v["tools"].as_u64().unwrap_or(0) > 0);
+    assert_eq!(r.out.lines().count(), 1, "--compact is one line");
+    assert!(invoke(&["capabilities"]).out.lines().count() > 1, "indented by default");
+}
+
+#[test]
+fn a_tool_prints_its_result_and_its_help() {
+    let r = invoke(&["core-session-show"]);
+    assert_eq!((r.code, r.err.as_str()), (0, ""), "{}", r.out);
+    serde_json::from_str::<serde_json::Value>(&r.out).unwrap();
+    let h = invoke(&["core-session-show", "--help"]);
+    assert_eq!(h.code, 0);
+    assert!(h.out.contains("Usage: craft-anything-cli core-session-show"), "{}", h.out);
+}
+
+#[test]
+fn an_unknown_tool_or_a_bad_tool_option_is_a_usage_error() {
+    for args in [
+        &["no-such-tool"][..],
+        &["core-session-show", "--bogus"],
+        &["core-session-show", "--deep", "--clean-room"],
+        &["core-session-show", "--output-format", "xml"],
+    ] {
+        let r = invoke(args);
+        assert_eq!((r.code, r.out.as_str()), (2, ""), "{args:?}: {}", r.err);
+        assert!(r.err.starts_with("error: "), "{args:?}: {}", r.err);
+    }
+}
+
+#[test]
+fn a_command_that_fails_exits_1_with_the_error_on_both_streams() {
+    let gone = std::env::temp_dir().join("craft-anything-cli-no-such-file.bin");
+    let r = invoke(&["triage", gone.to_str().unwrap()]);
+    assert_eq!(r.code, 1, "{}", r.err);
+    assert!(r.out.contains("\"error\""), "{}", r.out);
+    assert!(r.err.starts_with("error: "), "{}", r.err);
+}
