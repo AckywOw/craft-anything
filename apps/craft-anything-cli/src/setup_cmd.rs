@@ -5,7 +5,6 @@ use crate::{Io, fail};
 use clap::Args;
 use craft_anything_setup::{ActionKind, CheckStatus, DoctorRequest, PlanRequest};
 use serde_json::{Value, json};
-use std::io::IsTerminal as _;
 
 #[derive(Debug, Args)]
 pub struct SetupArgs {
@@ -40,13 +39,12 @@ fn human(f: Format) -> bool {
     matches!(f, Format::Text | Format::Md)
 }
 
-fn confirm(io: &mut Io<'_>, question: &str) -> bool {
-    if !(std::io::stdin().is_terminal() && std::io::stderr().is_terminal()) {
+fn confirm(io: &mut Io<'_>, context: &crate::Context, question: &str) -> bool {
+    if !context.can_ask() {
         return false;
     }
     errp!(io, "{question} [y/N] ");
-    let mut line = String::new();
-    std::io::stdin().read_line(&mut line).is_ok() && matches!(line.trim(), "y" | "Y" | "yes")
+    matches!(context.read_line().trim(), "y" | "Y" | "yes")
 }
 
 fn print_plan(io: &mut Io<'_>, plan: &craft_anything_setup::Plan) {
@@ -108,7 +106,7 @@ pub fn setup(io: &mut Io<'_>, context: &crate::Context, a: &SetupArgs, f: Format
         if human(f) {
             print_plan(io, &plan);
         }
-        confirm(io, &format!("Apply these {} changes?", plan.change_count()))
+        confirm(io, context, &format!("Apply these {} changes?", plan.change_count()))
     };
     if !approved {
         if human(f) {
