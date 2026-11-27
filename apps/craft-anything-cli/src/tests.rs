@@ -484,3 +484,25 @@ fn an_api_backend_has_no_agent_model_or_thinking() {
         assert!(r.err.contains("does not offer a live model") || r.err.contains("No AI backend named"), "{args:?}: {}", r.err);
     }
 }
+
+#[test]
+fn a_project_that_cannot_be_made_stops_every_command_that_needs_the_engine() {
+    let (dir, cx) = sandbox();
+    // A folder below a file can be neither opened nor created.
+    let file = dir.path().join("a-file");
+    std::fs::write(&file, "x").unwrap();
+    let project = file.join("project").display().to_string();
+    let target = dir.path().join("t.txt").display().to_string();
+    for args in [
+        vec!["--project", &project, "mcp"],
+        vec!["--project", &project, "triage", &target],
+        vec!["--project", &project, "report"],
+        vec!["--project", &project, "capabilities"],
+        vec!["--project", &project, "chat", "hello"],
+        vec!["--project", &project, "ai", "list"],
+    ] {
+        let r = invoke_in(&cx, &args);
+        assert_eq!(r.code, 1, "{args:?}: {}", r.out);
+        assert!(r.err.contains("a-file"), "{args:?}: {}", r.err);
+    }
+}
