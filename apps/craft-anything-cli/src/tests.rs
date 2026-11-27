@@ -450,3 +450,37 @@ fn a_bad_log_value_from_the_environment_is_named_by_its_variable() {
     let said = crate::env_value_error(&err, &[]).unwrap_or_default();
     assert!(said.starts_with("CRAFT_ANYTHING_LOG: invalid value 'bogus' (expected one of"), "{said}");
 }
+
+#[test]
+fn setup_and_uninstall_say_what_they_did_and_what_blocks_them() {
+    let (dir, cx) = sandbox();
+    let claude = dir.path().join("home/.claude.json");
+    let done = invoke_in(&cx, &["--format", "text", "setup", "--yes", "--client", "claude_code"]);
+    assert_eq!(done.code, 0, "{}", done.err);
+    assert!(done.out.contains("status: configured") && done.out.contains("Restart"), "{}", done.out);
+    // A config that is not JSON is not touched: the plan says why, and nothing is applied.
+    std::fs::write(&claude, "{ not json").unwrap();
+    let blocked = invoke_in(&cx, &["--format", "text", "setup", "--yes", "--client", "claude_code"]);
+    assert_eq!(blocked.code, 1, "{}", blocked.out);
+    assert!(blocked.out.contains("[blocked]") || blocked.out.contains("blocked"), "{}", blocked.out);
+    let removed = invoke_in(&cx, &["--format", "text", "uninstall"]);
+    assert_eq!(removed.code, 1, "{}", removed.out);
+    assert!(removed.out.contains("blocked by Claude Code") && removed.out.contains("status: blocked") && removed.out.contains("Back up"), "{}", removed.out);
+    assert_eq!(std::fs::read_to_string(&claude).unwrap(), "{ not json", "the file is left as it was");
+}
+
+#[test]
+fn an_api_backend_has_no_agent_model_or_thinking() {
+    let (dir, cx) = sandbox();
+    add_server(&cx);
+    // A target is opened before the chat starts, and clean room refuses that.
+    let file = dir.path().join("x.txt").display().to_string();
+    let chat = invoke_in(&cx, &["chat", "hello", "--target", &file]);
+    assert_eq!(chat.code, 1, "{}", chat.err);
+    assert!(chat.err.contains("Clean room never does"), "{}", chat.err);
+    for args in [&["ai", "model", "srv", "--thinking", "high"][..], &["ai", "model", "srv", "--default"], &["ai", "model", "nope", "--default"]] {
+        let r = invoke_in(&cx, args);
+        assert_eq!(r.code, 1, "{args:?}: {}", r.out);
+        assert!(r.err.contains("does not offer a live model") || r.err.contains("No AI backend named"), "{args:?}: {}", r.err);
+    }
+}
