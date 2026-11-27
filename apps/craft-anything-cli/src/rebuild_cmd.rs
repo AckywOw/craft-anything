@@ -2,7 +2,7 @@
 //! answered on the terminal, or automatically with `--unattended` (first choice; approvals are
 //! refused, so nothing outside the project happens without a person).
 
-use crate::{Cli, INTERRUPTED, Io, make_engine};
+use crate::{Cli, INTERRUPTED, Io, make_engine_in};
 use clap::Args;
 use craft_anything_ai::rebuild::{self, RebuildRun, RunEvent, RunOptions};
 use craft_anything_ai::{AgentEvent, AiHub, BackendKind};
@@ -98,8 +98,8 @@ fn ensure_agent(io: &mut Io<'_>, hub: &AiHub, requested: Option<&str>) -> Result
 
 /// The `rebuild` command: open or make the project, start the run, and print its events until it ends.
 fn run(io: &mut Io<'_>, cli: &Cli, a: &RebuildArgs) -> Result<bool, ToolError> {
-    let engine = make_engine(None, cli.deep_for_run())?;
-    let hub = AiHub::new(engine.clone());
+    let engine = make_engine_in(&cli.context, None, cli.deep_for_run())?;
+    let hub = cli.context.hub(engine.clone());
     // Before the build starts, while no session lock is held (#1225).
     if let Err(e) = hub.ensure_session_id() {
         log::warn!("couldn't save the OpenCode Go session id: {e}");
