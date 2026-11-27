@@ -444,3 +444,49 @@ fn a_backend_that_cannot_be_saved_is_reported() {
     assert_eq!(r.code, 1, "{}", r.out);
     assert!(r.err.starts_with("error:"), "{}", r.err);
 }
+
+#[test]
+fn an_unattended_rebuild_answers_for_the_person() {
+    let ask = |kind: &str, choices: &[&str]| -> craft_anything_engine::inbox::Request {
+        serde_json::from_value(serde_json::json!({"id": "r1", "kind": kind, "title": "Pick one", "choices": choices, "created_ms": 0})).unwrap()
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut io = crate::Io { out: &mut out, err: &mut err, pretty: false };
+    let first = crate::rebuild_cmd::auto_answer(&mut io, &ask("question", &["red", "blue"]));
+    assert_eq!((first.choice.as_deref(), first.text), (Some("red"), None));
+    let open = crate::rebuild_cmd::auto_answer(&mut io, &ask("question", &[]));
+    assert!(open.choice.is_none() && open.text.is_some_and(|t| t.contains("best judgement")));
+    let approval = crate::rebuild_cmd::auto_answer(&mut io, &ask("approval", &[]));
+    assert_eq!(approval.allow, Some(false));
+    let said = String::from_utf8(out).unwrap();
+    assert!(said.contains("Pick one → red (unattended)") && said.contains("→ no preference (unattended)") && said.contains("→ refused (unattended)"), "{said}");
+}
+
+#[test]
+fn the_hook_notes_command_prints_nothing_when_no_notes_wait() {
+    let (dir, cx) = sandbox();
+    let r = invoke_in(&cx, &["builder-notes", &dir.path().join("none").display().to_string()]);
+    assert_eq!((r.code, r.out.as_str(), r.err.as_str()), (0, "", ""));
+}
+
+#[test]
+fn a_project_folder_is_created_then_opened_again() {
+    let (dir, cx) = sandbox();
+    let project = dir.path().join("again").display().to_string();
+    for _ in 0..2 {
+        assert_eq!(invoke_in(&cx, &["capabilities", "--project", &project]).code, 0);
+    }
+    assert!(dir.path().join("again/project.toml").is_file());
+}
+
+#[test]
+fn a_bad_log_value_from_the_environment_is_named_by_its_variable() {
+    use clap::CommandFactory as _;
+    let err = crate::Cli::command().try_get_matches_from(["craft-anything-cli", "--log", "bogus", "commands"]).unwrap_err();
+    // Typed on the command line: clap's own message stands.
+    let typed = ["--log", "bogus"].map(std::ffi::OsString::from);
+    assert_eq!(crate::env_value_error(&err, &typed), None);
+    // Not typed there: it came from CRAFT_ANYTHING_LOG.
+    let said = crate::env_value_error(&err, &[]).unwrap_or_default();
+    assert!(said.starts_with("CRAFT_ANYTHING_LOG: invalid value 'bogus' (expected one of"), "{said}");
+}
