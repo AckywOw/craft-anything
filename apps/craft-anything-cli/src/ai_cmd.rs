@@ -7,7 +7,6 @@ use clap::{Args, Subcommand};
 use craft_anything_ai::{AgentEvent, AiHub, BackendConfig, BackendEntry, BackendKind, BackendOptions, Effort};
 use craft_anything_evidence::ToolError;
 use serde_json::{Value, json};
-use std::io::Read as _;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
 
@@ -218,13 +217,12 @@ pub fn chat(io: &mut Io<'_>, cli: &Cli, a: &ChatArgs) -> i32 {
     if stopped { 130 } else { i32::from(code) }
 }
 
-fn read_key(key_env: &Option<String>, key_stdin: bool) -> Result<Option<String>, KeyError> {
+fn read_key(context: &crate::Context, key_env: &Option<String>, key_stdin: bool) -> Result<Option<String>, KeyError> {
     if let Some(var) = key_env {
         return std::env::var(var).map(Some).map_err(|_| KeyError::EnvNotSet(var.clone()));
     }
     if key_stdin {
-        let mut s = String::new();
-        std::io::stdin().take(64 * 1024).read_to_string(&mut s).map_err(KeyError::Stdin)?;
+        let s = context.read_to_string(64 * 1024).map_err(KeyError::Stdin)?;
         let k = s.trim().to_string();
         return if k.is_empty() { Err(KeyError::EmptyStdin) } else { Ok(Some(k)) };
     }
@@ -268,7 +266,7 @@ pub fn ai(io: &mut Io<'_>, cli: &Cli, c: &AiCommand, f: Format) -> i32 {
                 Ok(k) => k,
                 Err(_) => return usage(io, UsageError::AiKind),
             };
-            let key = match read_key(key_env, *key_stdin) {
+            let key = match read_key(&cli.context, key_env, *key_stdin) {
                 Ok(k) => k,
                 Err(e) => return usage(io, e),
             };
@@ -312,7 +310,7 @@ pub fn ai(io: &mut Io<'_>, cli: &Cli, c: &AiCommand, f: Format) -> i32 {
                 };
             }
             if key_env.is_some() || *key_stdin {
-                let key = match read_key(key_env, *key_stdin) {
+                let key = match read_key(&cli.context, key_env, *key_stdin) {
                     Ok(Some(k)) => k,
                     Ok(None) => return usage(io, UsageError::KeyNeeded),
                     Err(e) => return usage(io, e),

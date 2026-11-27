@@ -225,9 +225,53 @@ pub struct Context {
     /// The program and arguments `setup` registers with each client; `None`: this computer's
     /// `craft-anything-cli mcp` ([`craft_anything_setup::default_command`]).
     pub mcp_command: Option<Vec<String>>,
+    /// What standard input holds, for the commands that read answers or a key from it; `None`:
+    /// the real standard input.
+    pub stdin: Option<Stdin>,
+}
+
+/// A fixed standard input, read once from the front.
+#[derive(Debug, Clone, Default)]
+pub struct Stdin(Arc<std::sync::Mutex<std::io::Cursor<Vec<u8>>>>);
+
+impl Stdin {
+    pub fn new(text: &str) -> Self {
+        Self(Arc::new(std::sync::Mutex::new(std::io::Cursor::new(text.as_bytes().to_vec()))))
+    }
 }
 
 impl Context {
+    /// Whether answers can be asked for: a fixed input always can; the real one only on a terminal.
+    pub fn can_ask(&self) -> bool {
+        use std::io::IsTerminal as _;
+        self.stdin.is_some() || (std::io::stdin().is_terminal() && std::io::stderr().is_terminal())
+    }
+
+    /// One line of input (without its end), empty at the end of the input.
+    pub fn read_line(&self) -> String {
+        use std::io::BufRead as _;
+        let mut s = String::new();
+        let _ = match &self.stdin {
+            Some(fixed) => fixed.0.lock().map_or(Ok(0), |mut c| c.read_line(&mut s)),
+            None => std::io::stdin().lock().read_line(&mut s),
+        };
+        s.trim_end_matches(['\r', '\n']).to_string()
+    }
+
+    /// Up to `limit` bytes of input, to its end.
+    pub fn read_to_string(&self, limit: u64) -> std::io::Result<String> {
+        use std::io::Read as _;
+        let mut s = String::new();
+        match &self.stdin {
+            Some(fixed) => match fixed.0.lock() {
+                Ok(mut c) => (&mut *c).take(limit).read_to_string(&mut s)?,
+                Err(_) => 0,
+            },
+            None => std::io::stdin().take(limit).read_to_string(&mut s)?,
+        };
+        Ok(s)
+    }
+
     /// The settings folder this run uses.
     pub fn config_dir(&self) -> std::path::PathBuf {
         self.config_dir.clone().unwrap_or_else(craft_anything_engine::settings::config_dir)
