@@ -3,7 +3,7 @@
 use crate::output::Format;
 use crate::{Io, fail};
 use clap::Args;
-use craft_anything_setup::{ActionKind, CheckStatus, DoctorRequest, Host, PlanRequest};
+use craft_anything_setup::{ActionKind, CheckStatus, DoctorRequest, PlanRequest};
 use serde_json::{Value, json};
 use std::io::IsTerminal as _;
 
@@ -75,9 +75,9 @@ fn print_plan(io: &mut Io<'_>, plan: &craft_anything_setup::Plan) {
     }
 }
 
-pub fn setup(io: &mut Io<'_>, a: &SetupArgs, f: Format) -> i32 {
-    let host = Host::current();
-    let command = match craft_anything_setup::default_command() {
+pub fn setup(io: &mut Io<'_>, context: &crate::Context, a: &SetupArgs, f: Format) -> i32 {
+    let host = context.host();
+    let command = match context.mcp_command() {
         Ok(c) => c,
         Err(e) => return fail(io, &e, f),
     };
@@ -139,9 +139,9 @@ pub fn setup(io: &mut Io<'_>, a: &SetupArgs, f: Format) -> i32 {
     if matches!(report.status, "configured" | "unchanged") { 0 } else { 1 }
 }
 
-pub fn doctor(io: &mut Io<'_>, a: &DoctorArgs, f: Format) -> i32 {
-    let host = Host::current();
-    let req = DoctorRequest { clients: a.clients.clone(), extra: crate::ai_cmd::doctor_checks(), ..DoctorRequest::default() };
+pub fn doctor(io: &mut Io<'_>, context: &crate::Context, a: &DoctorArgs, f: Format) -> i32 {
+    let host = context.host();
+    let req = DoctorRequest { clients: a.clients.clone(), extra: crate::ai_cmd::doctor_checks(context), ..DoctorRequest::default() };
     let report = craft_anything_setup::doctor(&host, &req);
     if human(f) {
         for c in &report.checks {
@@ -163,11 +163,11 @@ pub fn doctor(io: &mut Io<'_>, a: &DoctorArgs, f: Format) -> i32 {
     if report.healthy { 0 } else { 1 }
 }
 
-pub fn uninstall(io: &mut Io<'_>, _a: &UninstallArgs, f: Format) -> i32 {
-    let report = craft_anything_setup::uninstall(&Host::current());
+pub fn uninstall(io: &mut Io<'_>, context: &crate::Context, _a: &UninstallArgs, f: Format) -> i32 {
+    let report = craft_anything_setup::uninstall(&context.host());
     // Coding-agent sessions a build left running when the app was killed, which the agent's own
     // service would otherwise resume after we're gone (#1115).
-    let logs = craft_anything_ai::failure_log::dir_in(&craft_anything_engine::settings::config_dir());
+    let logs = craft_anything_ai::failure_log::dir_in(&context.config_dir());
     let sessions = craft_anything_ai::cli_agents::unfinished::sweep(
         &craft_anything_ai::cli_agents::unfinished::dir_in(&logs),
         &craft_anything_ai::cli_agents::adapters::AgentAdapters::default(),
