@@ -287,12 +287,12 @@ fn setup_doctor_and_uninstall_work_on_the_given_home() {
     let unknown = invoke_in(&cx, &["setup", "--client", "nope"]);
     assert_eq!(unknown.code, 1);
     assert!(unknown.err.contains("Unknown client nope"), "{}", unknown.err);
-    // The registered program is not there, so the doctor reports a problem.
+    // The registered program is not there (whether or not this computer has its own), so the doctor reports a problem.
     let doctor = invoke_in(&cx, &["doctor", "--client", "claude_code"]);
     assert_eq!(doctor.code, 1, "{}", doctor.err);
-    assert!(json(&doctor)["checks"].as_array().is_some_and(|c| c.iter().any(|c| c["name"] == "binary")));
+    assert!(json(&doctor)["checks"].as_array().is_some_and(|c| c.iter().any(|c| c["name"] == "registration:claude_code" && c["status"] == "fail")));
     let text = invoke_in(&cx, &["--format", "text", "doctor"]);
-    assert!(text.out.contains("[FAIL] binary") && text.out.contains("problems found"), "{}", text.out);
+    assert!(text.out.contains("[FAIL] registration:claude_code") && text.out.contains("problems found"), "{}", text.out);
     let removed = invoke_in(&cx, &["--format", "text", "uninstall"]);
     assert_eq!(removed.code, 0, "{}", removed.err);
     assert!(removed.out.contains("removed claude_code"), "{}", removed.out);
