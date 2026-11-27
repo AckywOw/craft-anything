@@ -2,7 +2,7 @@
 
 use crate::error::{KeyError, UsageError};
 use crate::output::Format;
-use crate::{Cli, INTERRUPTED, Io, fail, make_engine, usage};
+use crate::{Cli, INTERRUPTED, Io, fail, make_engine_in, usage};
 use clap::{Args, Subcommand};
 use craft_anything_ai::{AgentEvent, AiHub, BackendConfig, BackendEntry, BackendKind, BackendOptions, Effort};
 use craft_anything_evidence::ToolError;
@@ -118,7 +118,7 @@ pub enum AiCommand {
 }
 
 fn hub(cli: &Cli) -> Result<AiHub, ToolError> {
-    let hub = AiHub::new(make_engine(cli.project.as_deref(), cli.deep_for_run())?);
+    let hub = cli.context.hub(make_engine_in(&cli.context, cli.project.as_deref(), cli.deep_for_run())?);
     // Before any command runs, while no session lock is held (#1225).
     if let Err(e) = hub.ensure_session_id() {
         log::warn!("couldn't save the OpenCode Go session id: {e}");
@@ -506,10 +506,10 @@ pub fn ai(io: &mut Io<'_>, cli: &Cli, c: &AiCommand, f: Format) -> i32 {
 }
 
 /// AI reachability checks for `doctor` (bounded; each configured backend once).
-pub fn doctor_checks() -> Vec<craft_anything_setup::Check> {
+pub fn doctor_checks(context: &crate::Context) -> Vec<craft_anything_setup::Check> {
     use craft_anything_setup::{Check, CheckStatus};
-    let Ok(engine) = make_engine(None, None) else { return Vec::new() };
-    let hub = AiHub::new(engine);
+    let Ok(engine) = make_engine_in(context, None, None) else { return Vec::new() };
+    let hub = context.hub(engine);
     let results = hub.check_reachability();
     if results.is_empty() {
         return vec![Check::new("ai", CheckStatus::Info, "No AI backend is set up (optional).").fix("Run `craft-anything-cli ai detect`, then `ai add`.")];

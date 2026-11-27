@@ -136,3 +136,173 @@ fn a_command_that_fails_exits_1_with_the_error_on_both_streams() {
     assert!(r.out.contains("\"error\""), "{}", r.out);
     assert!(r.err.starts_with("error: "), "{}", r.err);
 }
+
+// ---- commands that save settings, keys and client configuration, over a folder of their own ----
+
+fn sandbox() -> (tempfile::TempDir, crate::Context) {
+    let dir = tempfile::tempdir().unwrap();
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let host = craft_anything_setup::Host { home, env: Default::default(), os: craft_anything_setup::Os::Linux };
+    let context = crate::Context {
+        config_dir: Some(dir.path().join("config")),
+        host: Some(host),
+        mcp_command: Some(vec!["/opt/craft-anything/craft-anything-cli".into(), "mcp".into()]),
+    };
+    (dir, context)
+}
+
+fn invoke_in(context: &crate::Context, args: &[&str]) -> Ran {
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let code = crate::run_in(std::iter::once("craft-anything-cli").chain(args.iter().copied()), &mut out, &mut err, context.clone());
+    Ran { code, out: String::from_utf8_lossy(&out).into_owned(), err: String::from_utf8_lossy(&err).into_owned() }
+}
+
+fn json(r: &Ran) -> serde_json::Value {
+    serde_json::from_str(&r.out).unwrap_or_else(|e| panic!("not JSON ({e}): {}", r.out))
+}
+
+const SERVER: [&str; 8] = ["ai", "add", "srv", "--kind", "openai_compatible", "--model", "m1", "--base-url"];
+
+fn add_server(cx: &crate::Context) {
+    let mut args = SERVER.to_vec();
+    args.push("http://127.0.0.1:9/v1");
+    let r = invoke_in(cx, &args);
+    assert_eq!((r.code, r.err.as_str()), (0, ""), "{}", r.out);
+    assert_eq!(json(&r)["added"]["name"], "srv");
+}
+
+#[test]
+fn a_backend_is_added_changed_listed_and_removed_in_the_given_folder() {
+    let (dir, cx) = sandbox();
+    assert_eq!(json(&invoke_in(&cx, &["ai", "list"])), serde_json::json!([]));
+    add_server(&cx);
+    // Saved in the folder the context names, not in the person's.
+    assert!(dir.path().join("config/config.toml").is_file());
+    let listed = json(&invoke_in(&cx, &["ai", "list"]));
+    assert_eq!((listed[0]["name"].clone(), listed[0]["model"].clone()), ("srv".into(), "m1".into()));
+    assert_eq!(json(&invoke_in(&cx, &["ai", "model", "srv", "m2"]))["model"], "m2");
+    assert_eq!(json(&invoke_in(&cx, &["ai", "effort", "srv", "high"]))["effort"], "high");
+    assert!(json(&invoke_in(&cx, &["ai", "effort", "srv"]))["levels"].is_array());
+    assert_eq!(json(&invoke_in(&cx, &["ai", "request-rate", "srv", "30"]))["name"], "srv");
+    assert!(json(&invoke_in(&cx, &["ai", "request-rate", "srv"]))["requests_per_minute"].is_u64());
+    assert_eq!(json(&invoke_in(&cx, &["ai", "tools", "srv", "lean"]))["name"], "srv");
+    assert_eq!(invoke_in(&cx, &["ai", "tools", "srv"]).code, 0);
+    assert_eq!(invoke_in(&cx, &["ai", "off", "srv"]).code, 0);
+    assert_eq!(json(&invoke_in(&cx, &["ai", "list"]))[0]["enabled"], false);
+    assert_eq!(invoke_in(&cx, &["ai", "on", "srv"]).code, 0);
+    assert_eq!(json(&invoke_in(&cx, &["ai", "builder", "srv"]))["builder"], "srv");
+    assert_eq!(invoke_in(&cx, &["ai", "builder"]).code, 0);
+    assert_eq!(invoke_in(&cx, &["ai", "extractor", "srv"]).code, 0);
+    assert_eq!(json(&invoke_in(&cx, &["ai", "extractor"]))["extractor"], serde_json::Value::Null);
+    assert_eq!(json(&invoke_in(&cx, &["ai", "key", "srv"]))["name"], "srv");
+    assert_eq!(json(&invoke_in(&cx, &["ai", "key", "srv", "--forget"]))["changed"], "forgotten");
+    assert_eq!(json(&invoke_in(&cx, &["ai", "program", "srv"]))["found"], true);
+    assert_eq!(json(&invoke_in(&cx, &["ai", "folder", "srv"]))["found"], true);
+    let text = invoke_in(&cx, &["--format", "text", "ai", "list"]);
+    assert!(text.out.contains("name: srv"), "{}", text.out);
+    // Nothing is listening at that address, so the model list and a test request fail with exit 1.
+    for args in [&["ai", "model", "srv"][..], &["ai", "test", "srv"]] {
+        let r = invoke_in(&cx, args);
+        assert_eq!(r.code, 1, "{args:?}: {}", r.err);
+        assert!(r.err.contains("Couldn't reach srv"), "{}", r.err);
+    }
+    assert_eq!(json(&invoke_in(&cx, &["ai", "remove", "srv"]))["removed"], true);
+    let again = invoke_in(&cx, &["ai", "remove", "srv"]);
+    assert_eq!((again.code, json(&again)["removed"].clone()), (1, false.into()));
+    assert_eq!(invoke_in(&cx, &["ai", "detect"]).code, 0);
+}
+
+#[test]
+fn ai_commands_refuse_what_they_cannot_do() {
+    let (_dir, cx) = sandbox();
+    add_server(&cx);
+    // Usage errors (exit 2) before anything is saved.
+    for (args, needle) in [
+        (&["ai", "add", "x", "--kind", "bogus"][..], "--kind must be one of"),
+        (&["ai", "add", "x", "--kind", "openai_compatible", "--key-env", "CA_NO_SUCH_VARIABLE_X"], "CA_NO_SUCH_VARIABLE_X"),
+    ] {
+        let r = invoke_in(&cx, args);
+        assert_eq!((r.code, r.out.as_str()), (2, ""), "{args:?}");
+        assert!(r.err.contains(needle), "{args:?}: {}", r.err);
+    }
+    // Failures (exit 1) that name the backend or the value.
+    for (args, needle) in [
+        (&["ai", "add", "x", "--kind", "openai_compatible", "--base-url", "http://127.0.0.1:9/v1"][..], "Couldn't reach x"),
+        (&["ai", "key", "nope"], "No AI backend named"),
+        (&["ai", "effort", "srv", "bogus"], "isn't an effort level"),
+        (&["ai", "tools", "srv", "bogus"], "isn't a tool list"),
+        (&["ai", "builder", "nope"], "No AI backend named"),
+        (&["ai", "folder", "srv", "relative/path"], "doesn't keep a folder"),
+    ] {
+        let r = invoke_in(&cx, args);
+        assert_eq!(r.code, 1, "{args:?}: {}", r.err);
+        assert!(r.err.contains(needle), "{args:?}: {}", r.err);
+    }
+    for args in [&["ai", "model", "nope", "m"][..], &["ai", "on", "nope"], &["ai", "off", "nope"]] {
+        assert_eq!(invoke_in(&cx, args).code, 1, "{args:?}");
+    }
+    // The saved backend is untouched by all of that.
+    assert_eq!(json(&invoke_in(&cx, &["ai", "list"])).as_array().map(Vec::len), Some(1));
+}
+
+#[test]
+fn chat_and_rebuild_say_what_is_missing() {
+    let (_dir, cx) = sandbox();
+    let chat = invoke_in(&cx, &["chat", "hello"]);
+    assert_eq!(chat.code, 1, "{}", chat.err);
+    assert!(chat.err.contains("No AI is set up yet"), "{}", chat.err);
+    let rebuild = invoke_in(&cx, &["rebuild", "-", "make a thing", "--unattended"]);
+    assert_eq!(rebuild.code, 1, "{}", rebuild.err);
+    assert!(rebuild.err.contains("Building needs a coding agent"), "{}", rebuild.err);
+    // The project of that attempt is in the folder of the context.
+    assert!(rebuild.out.contains(&_dir.path().join("config/projects").display().to_string()), "{}", rebuild.out);
+    add_server(&cx);
+    let chat = invoke_in(&cx, &["chat", "hello"]);
+    assert_eq!(chat.code, 1, "{}", chat.err);
+    assert!(chat.err.contains("Couldn't reach srv"), "{}", chat.err);
+    assert!(chat.err.contains(&_dir.path().join("config/logs").display().to_string()), "{}", chat.err);
+    let rebuild = invoke_in(&cx, &["rebuild", "-", "make a thing", "--backend", "nope"]);
+    assert_eq!(rebuild.code, 1);
+    assert!(rebuild.err.contains("No AI backend named"), "{}", rebuild.err);
+}
+
+#[test]
+fn setup_doctor_and_uninstall_work_on_the_given_home() {
+    let (dir, cx) = sandbox();
+    let claude = dir.path().join("home/.claude.json");
+    let planned = invoke_in(&cx, &["setup", "--dry-run", "--client", "claude_code"]);
+    assert_eq!(planned.code, 0, "{}", planned.err);
+    assert_eq!(json(&planned)["status"], "planned");
+    assert!(!claude.exists(), "a dry run writes nothing");
+    let text = invoke_in(&cx, &["--format", "text", "setup", "--dry-run", "--client", "claude_code"]);
+    assert!(text.out.contains("Register: /opt/craft-anything/craft-anything-cli mcp"), "{}", text.out);
+    let done = invoke_in(&cx, &["setup", "--yes", "--client", "claude_code"]);
+    assert_eq!(done.code, 0, "{}", done.err);
+    assert_eq!(json(&done)["status"], "configured");
+    assert!(std::fs::read_to_string(&claude).unwrap_or_default().contains("/opt/craft-anything/craft-anything-cli"));
+    assert_eq!(json(&invoke_in(&cx, &["setup", "--yes", "--client", "claude_code"]))["status"], "unchanged");
+    let text = invoke_in(&cx, &["--format", "text", "setup", "--client", "claude_code"]);
+    assert!(text.out.contains("status: unchanged"), "{}", text.out);
+    let unknown = invoke_in(&cx, &["setup", "--client", "nope"]);
+    assert_eq!(unknown.code, 1);
+    assert!(unknown.err.contains("Unknown client nope"), "{}", unknown.err);
+    // The registered program is not there, so the doctor reports a problem.
+    let doctor = invoke_in(&cx, &["doctor", "--client", "claude_code"]);
+    assert_eq!(doctor.code, 1, "{}", doctor.err);
+    assert!(json(&doctor)["checks"].as_array().is_some_and(|c| c.iter().any(|c| c["name"] == "binary")));
+    let text = invoke_in(&cx, &["--format", "text", "doctor"]);
+    assert!(text.out.contains("[FAIL] binary") && text.out.contains("problems found"), "{}", text.out);
+    let removed = invoke_in(&cx, &["--format", "text", "uninstall"]);
+    assert_eq!(removed.code, 0, "{}", removed.err);
+    assert!(removed.out.contains("removed claude_code"), "{}", removed.out);
+    assert_eq!(json(&invoke_in(&cx, &["uninstall"]))["status"], "nothing_to_remove");
+}
+
+#[test]
+fn the_default_context_is_this_computers() {
+    let cx = crate::Context::default();
+    assert_eq!(cx.config_dir(), craft_anything_engine::settings::config_dir());
+    assert_eq!(cx.host().home, craft_anything_setup::Host::current().home);
+    assert!(cx.config_dir.is_none() && cx.host.is_none() && cx.mcp_command.is_none());
+}

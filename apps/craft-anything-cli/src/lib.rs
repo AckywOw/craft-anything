@@ -40,6 +40,9 @@ pub static INTERRUPTED: AtomicBool = AtomicBool::new(false);
 #[command(after_help = "Every tool is also a subcommand: `craft-anything-cli commands` lists them, `craft-anything-cli <tool> --help` shows its options.\n\
 When a tool has its own --format option (core-target-open, ...), --format after the tool name goes to the tool; pick the output with --output-format (or --format before the tool name). `report` has no format option of its own: use `report --html` for HTML.")]
 pub struct Cli {
+    /// Where state lives and whose home `setup` configures: this computer's, unless a test gives another.
+    #[arg(skip)]
+    pub context: Context,
     /// Output format. `--output-format` always means this, even after a tool that has its own `--format`.
     #[arg(long, global = true, value_enum, default_value_t = Format::Json, alias = "output-format")]
     pub format: Format,
@@ -208,10 +211,76 @@ pub fn usage(io: &mut Io<'_>, e: impl Into<UsageError>) -> i32 {
     2
 }
 
+/// Where the CLI keeps its state and whose home `setup` configures. The default is this computer's
+/// (`settings::config_dir()`, the real home, the system key store): a run behaves as it always did.
+/// Tests give a folder of their own, so the commands that save settings, keys and client
+/// configuration can run in-process without touching the person's setup.
+#[derive(Debug, Clone, Default)]
+pub struct Context {
+    /// The settings folder (config.toml, ai-keys.toml, logs); `None`: `settings::config_dir()`.
+    pub config_dir: Option<std::path::PathBuf>,
+    /// The machine `setup`, `doctor` and `uninstall` configure; `None`: [`Host::current`].
+    pub host: Option<craft_anything_setup::Host>,
+    /// The program and arguments `setup` registers with each client; `None`: this computer's
+    /// `craft-anything-cli mcp` ([`craft_anything_setup::default_command`]).
+    pub mcp_command: Option<Vec<String>>,
+}
+
+impl Context {
+    /// The settings folder this run uses.
+    pub fn config_dir(&self) -> std::path::PathBuf {
+        self.config_dir.clone().unwrap_or_else(craft_anything_engine::settings::config_dir)
+    }
+
+    /// The machine setup works on.
+    pub fn host(&self) -> craft_anything_setup::Host {
+        self.host.clone().unwrap_or_else(craft_anything_setup::Host::current)
+    }
+
+    /// What `setup` registers.
+    pub fn mcp_command(&self) -> Result<Vec<String>, ToolError> {
+        match &self.mcp_command {
+            Some(command) => Ok(command.clone()),
+            None => craft_anything_setup::default_command(),
+        }
+    }
+
+    /// The API keys: the system store, or a file in the settings folder when one was given.
+    pub fn key_store(&self) -> craft_anything_ai::KeyStore {
+        match &self.config_dir {
+            Some(dir) => craft_anything_ai::KeyStore::file_only(dir.join("ai-keys.toml")),
+            None => craft_anything_ai::KeyStore::system(),
+        }
+    }
+
+    /// An AI hub over `engine`, with this run's settings file and keys.
+    pub fn hub(&self, engine: Arc<Engine>) -> craft_anything_ai::AiHub {
+        match &self.config_dir {
+            Some(dir) => craft_anything_ai::AiHub::with_stores(engine, dir.join("config.toml"), self.key_store()),
+            None => craft_anything_ai::AiHub::new(engine),
+        }
+    }
+}
+
 /// The engine with settings loaded, the run's mode, and the project (if any) opened.
 pub fn make_engine(project: Option<&Path>, deep_for_run: Option<bool>) -> Result<Arc<Engine>, ToolError> {
-    craft_anything_platform::sync::start_watchdog(craft_anything_engine::settings::config_dir().join("logs"));
-    let mut session = Session::new(Settings::load());
+    make_engine_in(&Context::default(), project, deep_for_run)
+}
+
+/// [`make_engine`] over `context`'s settings folder.
+pub fn make_engine_in(context: &Context, project: Option<&Path>, deep_for_run: Option<bool>) -> Result<Arc<Engine>, ToolError> {
+    craft_anything_platform::sync::start_watchdog(context.config_dir().join("logs"));
+    let mut session = match &context.config_dir {
+        // Folders the settings don't name stay inside it too, like `Session::isolated`: nothing a
+        // run makes lands in the person's own projects or engine folders.
+        Some(dir) => {
+            let mut settings = Settings::load_from(&dir.join("config.toml"));
+            settings.projects_dir.get_or_insert_with(|| dir.join("projects"));
+            settings.engines.store_dir.get_or_insert_with(|| dir.join("engines"));
+            Session::for_a_run_from(settings, Some(dir.clone()), None)
+        }
+        None => Session::new(Settings::load()),
+    };
     session.deep_for_run = deep_for_run;
     if let Some(dir) = project {
         session.open_project(open_or_create_project(dir)?)?;
@@ -293,6 +362,15 @@ where
     I: IntoIterator<Item = T>,
     T: Into<OsString> + Clone,
 {
+    run_in(args, out, err, Context::default())
+}
+
+/// [`run`] over `context`: the same command line, with state kept where the context says.
+pub fn run_in<I, T>(args: I, out: &mut dyn Write, err: &mut dyn Write, context: Context) -> i32
+where
+    I: IntoIterator<Item = T>,
+    T: Into<OsString> + Clone,
+{
     let mut io = Io { out, err, pretty: true };
     let args: Vec<OsString> = args.into_iter().map(Into::into).collect();
     let matches = match command().try_get_matches_from(&args) {
@@ -311,13 +389,14 @@ where
             return 2;
         }
     };
-    let cli = match <Cli as clap::FromArgMatches>::from_arg_matches(&matches) {
+    let mut cli = match <Cli as clap::FromArgMatches>::from_arg_matches(&matches) {
         Ok(c) => c,
         Err(e) => {
             let _ = io.err.write_all(e.render().to_string().as_bytes());
             return 2;
         }
     };
+    cli.context = context;
     io.pretty = !cli.compact;
     init_logging(cli.log);
     let code = dispatch(&mut io, cli);
@@ -339,7 +418,7 @@ fn dispatch(io: &mut Io<'_>, cli: Cli) -> i32 {
             0
         }
         Command::Mcp { all_tools, restricted, allow_web, allow_capture, inbox, targets } => {
-            let engine = match make_engine(cli.project.as_deref(), cli.deep_for_run()) {
+            let engine = match make_engine_in(&cli.context, cli.project.as_deref(), cli.deep_for_run()) {
                 Ok(e) => e,
                 Err(e) => {
                     errln!(io, "craft-anything mcp: {}", e.message);
@@ -352,7 +431,7 @@ fn dispatch(io: &mut Io<'_>, cli: Cli) -> i32 {
                 // provider), read here from the keychain so none appears on a command line or in
                 // a log.
                 let providers = engine.session().ext.get::<craft_anything_engines::assets::AssetProviders>().map(|p| p.as_ref().clone()).unwrap_or_default();
-                let keys = craft_anything_ai::keys::asset_keys(&craft_anything_ai::KeyStore::system(), &providers);
+                let keys = craft_anything_ai::keys::asset_keys(&&cli.context.key_store(), &providers);
                 engine.session().ext.insert(Arc::new(keys));
             }
             let mut opts = craft_anything_mcp::ServerOptions::from_env();
@@ -378,10 +457,10 @@ fn dispatch(io: &mut Io<'_>, cli: Cli) -> i32 {
                 }
             }
         }
-        Command::Setup(a) => setup_cmd::setup(io, a, f),
-        Command::Doctor(a) => setup_cmd::doctor(io, a, f),
-        Command::Uninstall(a) => setup_cmd::uninstall(io, a, f),
-        Command::Commands => commands(io, f),
+        Command::Setup(a) => setup_cmd::setup(io, &cli.context, a, f),
+        Command::Doctor(a) => setup_cmd::doctor(io, &cli.context, a, f),
+        Command::Uninstall(a) => setup_cmd::uninstall(io, &cli.context, a, f),
+        Command::Commands => commands(io, &cli.context, f),
         Command::Capabilities => capabilities(io, &cli, f),
         Command::Triage { path } => triage(io, &cli, path, f),
         Command::Report { path, html, out, no_evidence } => {
@@ -394,9 +473,9 @@ fn dispatch(io: &mut Io<'_>, cli: Cli) -> i32 {
     }
 }
 
-fn commands(io: &mut Io<'_>, f: Format) -> i32 {
+fn commands(io: &mut Io<'_>, context: &Context, f: Format) -> i32 {
     // The same engine every command gets: settings, the AI layer's tools and plugins.
-    let engine = match make_engine(None, None) {
+    let engine = match make_engine_in(context, None, None) {
         Ok(e) => e,
         Err(e) => return fail(io, &e, f),
     };
@@ -424,7 +503,7 @@ fn commands(io: &mut Io<'_>, f: Format) -> i32 {
 }
 
 fn capabilities(io: &mut Io<'_>, cli: &Cli, f: Format) -> i32 {
-    let engine = match make_engine(cli.project.as_deref(), cli.deep_for_run()) {
+    let engine = match make_engine_in(&cli.context, cli.project.as_deref(), cli.deep_for_run()) {
         Ok(e) => e,
         Err(e) => return fail(io, &e, f),
     };
@@ -490,7 +569,7 @@ fn with_target(
 }
 
 fn triage(io: &mut Io<'_>, cli: &Cli, path: &str, f: Format) -> i32 {
-    let engine = match make_engine(cli.project.as_deref(), cli.deep_for_run()) {
+    let engine = match make_engine_in(&cli.context, cli.project.as_deref(), cli.deep_for_run()) {
         Ok(e) => e,
         Err(e) => return fail(io, &e, f),
     };
@@ -516,7 +595,7 @@ fn triage(io: &mut Io<'_>, cli: &Cli, path: &str, f: Format) -> i32 {
 }
 
 fn report(io: &mut Io<'_>, cli: &Cli, path: Option<&str>, format: &str, out_file: Option<&Path>, no_evidence: bool, f: Format) -> i32 {
-    let engine = match make_engine(cli.project.as_deref(), cli.deep_for_run()) {
+    let engine = match make_engine_in(&cli.context, cli.project.as_deref(), cli.deep_for_run()) {
         Ok(e) => e,
         Err(e) => return fail(io, &e, f),
     };
@@ -587,8 +666,9 @@ fn tool(io: &mut Io<'_>, cli: &Cli, args: &[String], f: Format) -> i32 {
         compact: cli.compact,
         log: cli.log,
         command: Command::Commands,
+        context: cli.context.clone(),
     };
-    let mut engine = match make_engine(cli.project.as_deref(), cli.deep_for_run()) {
+    let mut engine = match make_engine_in(&cli.context, cli.project.as_deref(), cli.deep_for_run()) {
         Ok(e) => e,
         Err(e) => return fail(io, &e, f),
     };
@@ -601,7 +681,7 @@ fn tool(io: &mut Io<'_>, cli: &Cli, args: &[String], f: Format) -> i32 {
         let Some(p) = rest_args.get(i + 1).cloned() else { return usage(io, UsageError::ProjectNeedsFolder) };
         rest_args.drain(i..i + 2);
         cli.project = Some(PathBuf::from(p));
-        engine = match make_engine(cli.project.as_deref(), cli.deep_for_run()) {
+        engine = match make_engine_in(&cli.context, cli.project.as_deref(), cli.deep_for_run()) {
             Ok(e) => e,
             Err(e) => return fail(io, &e, f),
         };
