@@ -9,7 +9,6 @@ use craft_anything_ai::{AgentEvent, AiHub, BackendKind};
 use craft_anything_engine::inbox::{Answer, Request, RequestKind};
 use craft_anything_engine::workspace::Workspace;
 use craft_anything_evidence::ToolError;
-use std::io::BufRead as _;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::time::Duration;
@@ -211,7 +210,7 @@ fn run(io: &mut Io<'_>, cli: &Cli, a: &RebuildArgs) -> Result<bool, ToolError> {
                 }
                 RunEvent::Ask(r) => {
                     end_line(io, &mut line_open);
-                    let answer = if a.unattended { auto_answer(io, &r) } else { prompt_answer(io, &r) };
+                    let answer = if a.unattended { auto_answer(io, &r) } else { prompt_answer(io, &cli.context, &r) };
                     run.answer(&r.id, &answer)?;
                 }
                 RunEvent::Checked(c) => {
@@ -271,13 +270,11 @@ pub(crate) fn auto_answer(io: &mut Io<'_>, r: &Request) -> Answer {
     }
 }
 
-fn read_line() -> String {
-    let mut s = String::new();
-    let _ = std::io::stdin().lock().read_line(&mut s);
-    s.trim().to_string()
+fn read_line(context: &crate::Context) -> String {
+    context.read_line().trim().to_string()
 }
 
-fn prompt_answer(io: &mut Io<'_>, r: &Request) -> Answer {
+pub(crate) fn prompt_answer(io: &mut Io<'_>, context: &crate::Context, r: &Request) -> Answer {
     outln!(io, "\n? {}", r.title);
     if !r.detail.is_empty() {
         outln!(io, "  {}", r.detail.lines().take(12).collect::<Vec<_>>().join("\n  "));
@@ -288,7 +285,7 @@ fn prompt_answer(io: &mut Io<'_>, r: &Request) -> Answer {
                 outln!(io, "  {}) {c}", i + 1);
             }
             outp!(io, "Your answer (number or text): ");
-            let line = read_line();
+            let line = read_line(context);
             match line.parse::<usize>().ok().and_then(|n| n.checked_sub(1)).and_then(|i| r.choices.get(i)) {
                 Some(c) => Answer { choice: Some(c.clone()), ..Default::default() },
                 None => Answer { text: Some(line), ..Default::default() },
@@ -296,7 +293,7 @@ fn prompt_answer(io: &mut Io<'_>, r: &Request) -> Answer {
         }
         RequestKind::Approval => {
             outp!(io, "Allow? [y]es / [a]lways for this project / [n]o: ");
-            let line = read_line().to_lowercase();
+            let line = read_line(context).to_lowercase();
             Answer { allow: Some(line.starts_with('y') || line.starts_with('a')), always: line.starts_with('a'), ..Default::default() }
         }
     }

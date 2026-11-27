@@ -188,6 +188,7 @@ fn sandbox() -> (tempfile::TempDir, crate::Context) {
         config_dir: Some(dir.path().join("config")),
         host: Some(host),
         mcp_command: Some(vec!["/opt/craft-anything/craft-anything-cli".into(), "mcp".into()]),
+        stdin: None,
     };
     (dir, context)
 }
@@ -545,4 +546,63 @@ fn a_project_that_cannot_be_made_stops_every_command_that_needs_the_engine() {
         assert_eq!(r.code, 1, "{args:?}: {}", r.out);
         assert!(r.err.contains("a-file"), "{args:?}: {}", r.err);
     }
+}
+
+fn with_input(cx: &crate::Context, text: &str) -> crate::Context {
+    crate::Context { stdin: Some(crate::Stdin::new(text)), ..cx.clone() }
+}
+
+#[test]
+fn a_key_is_read_from_the_given_input() {
+    let (_dir, cx) = sandbox();
+    add_server(&cx);
+    let saved = invoke_in(&with_input(&cx, "sk-test-key\n"), &["ai", "key", "srv", "--key-stdin"]);
+    assert_eq!(saved.code, 0, "{}", saved.err);
+    assert!(!saved.out.contains("sk-test-key"), "the key is never printed");
+    assert_eq!(json(&invoke_in(&cx, &["ai", "list"]))[0]["key_stored"], true);
+    let empty = invoke_in(&with_input(&cx, "  \n"), &["ai", "key", "srv", "--key-stdin"]);
+    assert_eq!((empty.code, empty.out.as_str()), (2, ""), "{}", empty.err);
+    let mut add = SERVER.to_vec();
+    add.extend(["http://127.0.0.1:9/v1", "--key-stdin"]);
+    let none = invoke_in(&with_input(&cx, ""), &add);
+    assert_eq!(none.code, 2, "{}", none.err);
+}
+
+#[test]
+fn setup_applies_what_the_given_input_confirms() {
+    let (dir, cx) = sandbox();
+    let claude = dir.path().join("home/.claude.json");
+    let no = invoke_in(&with_input(&cx, "n\n"), &["--format", "text", "setup", "--client", "claude_code"]);
+    assert_eq!(no.code, 1, "{}", no.out);
+    assert!(!claude.exists());
+    let yes = invoke_in(&with_input(&cx, "y\n"), &["--format", "text", "setup", "--client", "claude_code"]);
+    assert_eq!(yes.code, 0, "{}", yes.err);
+    assert!(yes.err.contains("Apply these") && yes.out.contains("status: configured"), "{}{}", yes.err, yes.out);
+    assert!(claude.is_file());
+}
+
+#[test]
+fn a_rebuild_asks_the_person_through_the_given_input() {
+    let (_dir, cx) = sandbox();
+    let ask = |kind: &str, choices: &[&str]| -> craft_anything_engine::inbox::Request {
+        serde_json::from_value(
+            serde_json::json!({"id": "r1", "kind": kind, "title": "Pick one", "detail": "some\ncontext", "choices": choices, "created_ms": 0}),
+        )
+        .unwrap()
+    };
+    let (mut out, mut err) = (Vec::new(), Vec::new());
+    let mut io = crate::Io { out: &mut out, err: &mut err, pretty: false };
+    let answer = |text: &str, io: &mut crate::Io<'_>, r| crate::rebuild_cmd::prompt_answer(io, &with_input(&cx, text), &r);
+    let by_number = answer("2\n", &mut io, ask("question", &["red", "blue"]));
+    assert_eq!(by_number.choice.as_deref(), Some("blue"));
+    let by_text = answer("teal\n", &mut io, ask("question", &["red", "blue"]));
+    assert_eq!((by_text.choice, by_text.text.as_deref()), (None, Some("teal")));
+    let always = answer("a\n", &mut io, ask("approval", &[]));
+    assert_eq!((always.allow, always.always), (Some(true), true));
+    let once = answer("Yes\n", &mut io, ask("approval", &[]));
+    assert_eq!((once.allow, once.always), (Some(true), false));
+    let refused = answer("n\n", &mut io, ask("approval", &[]));
+    assert_eq!(refused.allow, Some(false));
+    let said = String::from_utf8(out).unwrap();
+    assert!(said.contains("? Pick one") && said.contains("  some\n  context") && said.contains("1) red") && said.contains("Allow? [y]es"), "{said}");
 }
