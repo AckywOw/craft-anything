@@ -346,3 +346,101 @@ fn the_default_context_is_this_computers() {
     assert_eq!(cx.host().home, craft_anything_setup::Host::current().home);
     assert!(cx.config_dir.is_none() && cx.host.is_none() && cx.mcp_command.is_none());
 }
+
+#[test]
+fn mcp_refuses_a_bad_shared_target_before_serving() {
+    let (dir, cx) = sandbox();
+    let inbox = dir.path().join("inbox").display().to_string();
+    for (args, needle) in [
+        (vec!["mcp", "--inbox", inbox.as_str(), "--target", "{"], "Invalid shared target: EOF while parsing"),
+        (vec!["mcp", "--target", "{\"x\":1}"], "unknown field `x`"),
+    ] {
+        let r = invoke_in(&cx, &args);
+        assert_eq!((r.code, r.out.as_str()), (1, ""), "{args:?}");
+        assert!(r.err.contains(needle), "{args:?}: {}", r.err);
+    }
+}
+
+#[test]
+fn triage_and_report_open_a_target_only_when_deep() {
+    let (dir, cx) = sandbox();
+    let file = dir.path().join("sample.txt");
+    std::fs::write(&file, b"hello world").unwrap();
+    let file = file.display().to_string();
+    // Clean room never looks inside the original.
+    for args in [&["triage", file.as_str()][..], &["report", file.as_str()]] {
+        let r = invoke_in(&cx, args);
+        assert_eq!(r.code, 1, "{args:?}");
+        assert!(r.err.contains("Clean room never does"), "{}", r.err);
+    }
+    let triage = invoke_in(&cx, &["--deep", "triage", &file]);
+    assert_eq!(triage.code, 0, "{}", triage.err);
+    assert_eq!(json(&triage)["environment"]["clean_room"], false);
+    let report = invoke_in(&cx, &["--deep", "report", &file]);
+    assert_eq!(report.code, 0, "{}", report.err);
+    assert!(report.out.starts_with("# Investigation report") && report.out.contains("sample.txt"), "{}", report.out);
+    // Without a target it reports on the (empty) project, as text or as a file.
+    let bare = invoke_in(&cx, &["report"]);
+    assert!(bare.out.contains("No targets recorded"), "{}", bare.out);
+    let page = dir.path().join("report.html");
+    let wrote = invoke_in(&cx, &["report", "--html", "--out", &page.display().to_string()]);
+    assert_eq!(wrote.code, 0, "{}", wrote.err);
+    assert_eq!(json(&wrote)["result"]["format"], "html");
+    assert!(std::fs::read_to_string(&page).unwrap().contains("<html"));
+    let missing = invoke_in(&cx, &["--deep", "triage", &dir.path().join("nope").display().to_string()]);
+    assert_eq!(missing.code, 1, "{}", missing.out);
+}
+
+#[test]
+fn tool_flags_after_the_name_are_the_global_ones() {
+    let (dir, cx) = sandbox();
+    let project = dir.path().join("proj").display().to_string();
+    let r = invoke_in(&cx, &["capabilities", "--project", &project, "--allow-run", "--deep", "--format", "text"]);
+    assert_eq!(r.code, 0, "{}", r.err);
+    assert!(r.out.starts_with("analysis_mode: deep"), "{}", r.out);
+    assert!(dir.path().join("proj/project.toml").is_file(), "the project was opened where --project said");
+    let clean = invoke_in(&cx, &["capabilities", "--clean-room", "--json"]);
+    assert_eq!(json(&clean)["analysis_mode"], "clean-room");
+    let bad = invoke_in(&cx, &["capabilities", "--format", "bogus"]);
+    assert_eq!((bad.code, bad.out.as_str()), (2, ""));
+    let none = invoke_in(&cx, &["capabilities", "--project"]);
+    assert_eq!((none.code, none.out.as_str()), (2, ""));
+    assert_eq!(invoke_in(&cx, &["--deep", "--clean-room", "capabilities"]).code, 2);
+}
+
+#[test]
+fn every_log_level_is_accepted() {
+    let (_dir, cx) = sandbox();
+    for level in ["off", "error", "warn", "info", "debug", "trace"] {
+        let r = invoke_in(&cx, &["--log", level, "capabilities"]);
+        assert_eq!(r.code, 0, "{level}: {}", r.err);
+    }
+}
+
+#[test]
+fn setup_asks_before_it_changes_anything() {
+    let (dir, cx) = sandbox();
+    // No terminal to answer on, so it shows the plan and stops.
+    let text = invoke_in(&cx, &["--format", "text", "setup", "--client", "claude_code"]);
+    assert_eq!(text.code, 1, "{}", text.err);
+    assert!(text.out.contains("[create] Claude Code"), "{}", text.out);
+    assert!(!dir.path().join("home/.claude.json").exists());
+    let json_plan = invoke_in(&cx, &["setup", "--client", "claude_code"]);
+    assert_eq!(json(&json_plan)["status"], "needs_confirmation");
+    let all = invoke_in(&cx, &["setup", "--dry-run", "--all-detected"]);
+    assert_eq!(json(&all)["status"], "planned");
+}
+
+#[test]
+fn a_backend_that_cannot_be_saved_is_reported() {
+    let (dir, cx) = sandbox();
+    let config = dir.path().join("config");
+    std::fs::create_dir_all(&config).unwrap();
+    // The settings file's place is taken by a folder, so reading finds nothing and saving fails.
+    std::fs::create_dir(config.join("config.toml")).unwrap();
+    let mut args = SERVER.to_vec();
+    args.push("http://127.0.0.1:9/v1");
+    let r = invoke_in(&cx, &args);
+    assert_eq!(r.code, 1, "{}", r.out);
+    assert!(r.err.starts_with("error:"), "{}", r.err);
+}
