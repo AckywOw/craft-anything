@@ -232,11 +232,11 @@ pub struct Context {
 
 /// A fixed standard input, read once from the front.
 #[derive(Debug, Clone, Default)]
-pub struct Stdin(Arc<std::sync::Mutex<std::io::Cursor<Vec<u8>>>>);
+pub struct Stdin(Arc<craft_anything_platform::sync::Mutex<std::io::Cursor<Vec<u8>>>>);
 
 impl Stdin {
     pub fn new(text: &str) -> Self {
-        Self(Arc::new(std::sync::Mutex::new(std::io::Cursor::new(text.as_bytes().to_vec()))))
+        Self(Arc::new(craft_anything_platform::sync::Mutex::new(std::io::Cursor::new(text.as_bytes().to_vec()))))
     }
 }
 
