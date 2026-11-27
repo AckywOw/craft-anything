@@ -254,7 +254,7 @@ fn end_line(io: &mut Io<'_>, open: &mut bool) {
     }
 }
 
-fn auto_answer(io: &mut Io<'_>, r: &Request) -> Answer {
+pub(crate) fn auto_answer(io: &mut Io<'_>, r: &Request) -> Answer {
     match r.kind {
         RequestKind::Question => {
             outln!(io, "? {} → {} (unattended)", r.title, r.choices.first().map(String::as_str).unwrap_or("no preference"));
