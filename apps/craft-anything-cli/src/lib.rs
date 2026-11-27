@@ -431,7 +431,7 @@ fn dispatch(io: &mut Io<'_>, cli: Cli) -> i32 {
                 // provider), read here from the keychain so none appears on a command line or in
                 // a log.
                 let providers = engine.session().ext.get::<craft_anything_engines::assets::AssetProviders>().map(|p| p.as_ref().clone()).unwrap_or_default();
-                let keys = craft_anything_ai::keys::asset_keys(&&cli.context.key_store(), &providers);
+                let keys = craft_anything_ai::keys::asset_keys(&cli.context.key_store(), &providers);
                 engine.session().ext.insert(Arc::new(keys));
             }
             let mut opts = craft_anything_mcp::ServerOptions::from_env();
