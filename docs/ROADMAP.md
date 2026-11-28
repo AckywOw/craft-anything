@@ -370,7 +370,7 @@ only when it's green and a maintainer has fully reviewed it, code as well as wor
       time limit, through `platform::retry::when_interrupted`); the Cutter command tool, whose
       commands can change the session, calls once and says the call was interrupted
       — claimed: tanish2k09, branch bugfix/r5.2-interrupted-loopback-call
-- [ ] The Cutter tests' stand-in session answers only one connection, so when a signal interrupts
+- [x] The Cutter tests' stand-in session answers only one connection, so when a signal interrupts
       the first call and `cutter::command` calls again, the stand-in writes to the dropped
       connection and panics (BrokenPipe) and the repeated call is reset (CI run 45366943275);
       serve connections until one request is answered, and test a dropped first call
